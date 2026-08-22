@@ -865,6 +865,19 @@ def recent_rows(hours=24):
     return out
 
 
+def merge_rates(new, old):
+    """이번 수집에서 빠진 화폐 환율은 지난 스냅샷 값을 이어 쓴다 — 교환 API 가 잠깐 막혔다고
+    시세 전체의 축척이 무너지는 것을 막는다(21:59 수집분에서 실제로 벌어진 사고)."""
+    out = dict(new or {})
+    for c, v in (old or {}).items():
+        if c in out:
+            continue
+        r = (v.get("rate") if isinstance(v, dict) else v) or 0
+        if isinstance(r, (int, float)) and r >= 1:
+            out[c] = {"rate": r, "how": "이전 수집분"}
+    return out
+
+
 def collect(url, limit=100):
     """한 시점의 시세를 통째로 뜬다. 스냅샷 하나 = 한 시점 = 시점이 섞일 수 없다."""
     taken = int(time.time() * 1000)
@@ -879,6 +892,11 @@ def collect(url, limit=100):
               % (q0.get("status"),))
         print("     !! 사이트 문구와 어긋납니다 — 검색 필터를 확인하세요.")
     rates = fetch_rates(base, league, TRADE_CURRENCIES)
+    try:
+        with open(LATEST, encoding="utf-8") as _f:
+            rates = merge_rates(rates, json.load(_f).get("rates"))
+    except Exception:
+        pass
 
     bows, total, skipped, base, league = load_banded(url, limit)
 
@@ -1437,7 +1455,353 @@ def demo():
         globals()["LATEST"] = keepL2
         shutil.rmtree(d3, ignore_errors=True)
 
+    # 가격 체크: 파서는 페이지 parseItem 과 같은 픽스처로 같은 답을 내야 한다
+    KR_ITEM = "\n".join([
+        "아이템 종류: 활", "희귀도: 희귀", "파멸의 노래", "고급 광신도 활", "--------",
+        "품질: +20% (증가됨)", "물리 피해: 52-97 (증가됨)", "원소 피해: 18-33 (증가됨)",
+        "카오스 피해: 5-9", "치명타 명중 확률: 6.50%", "초당 공격 횟수: 1.42 (증가됨)", "--------",
+        "요구 사항:", "레벨: 62", "--------", "치명타 명중 확률 38% 증가", "모든 투사체 스킬 레벨 +3"])
+    _it = parse_item_text(KR_ITEM)
+    assert _it and _it["pmin"] == 52 and _it["emax"] == 33 and _it["aps"] == 1.42, _it
+    assert _it["crit"] == 6.5 and _it["rarity"] == "Rare" and _it["name"] == "파멸의 노래 고급 광신도 활", _it
+    assert _it["mods"] == ["치명타 명중 확률 38% 증가", "모든 투사체 스킬 레벨 +3"], _it["mods"]
+    assert abs(item_dps(_it)[2] - ((52 + 97) / 2 + (18 + 33) / 2) * 1.42) < 0.01
+    assert parse_item_text("구분선 없는 텍스트") is None and parse_item_text("") is None
+    assert parse_item_text(KR_ITEM.replace("초당 공격 횟수: 1.42 (증가됨)", "")) is None  # aps 없으면 활 아님
+
+    # frontier_py: 페이지 frontier 와 같은 동점 판정
+    _f = frontier_py([{"d": 100, "p": 5}, {"d": 150, "p": 20}, {"d": 120, "p": 30}, {"d": 150, "p": 18}])
+    assert len(_f) == 2 and _f[0]["d"] == 100 and _f[1]["p"] == 18, _f
+    assert len(frontier_py([{"d": 1, "p": 2}, {"d": 1, "p": 2}])) == 2      # 동점 전원 생존
+
+    # 판정문: 최저가·호가 비교·다음 계단이 실제로 계산되는지
+    _latest = {"taken_at": int(time.time() * 1000),
+               "rates": {"exalted": {"rate": 1}, "divine": {"rate": 400}},
+               "bows": [{"pdps": 500, "edps": 0, "price": 10, "cur": "exalted", "rarity": "Rare"},
+                        {"pdps": 600, "edps": 0, "price": 2, "cur": "divine", "rarity": "Rare"},
+                        {"pdps": 700, "edps": 0, "price": 10, "cur": "divine", "rarity": "Rare"}]}
+    _it2 = dict(_it, price=3.0, cur="divine")
+    _v = price_verdict(_it2, _latest)
+    assert "이 DPS 시장 최저가: 10.0 ex" in _v, _v          # DPS 142 를 덮는 최저가 = d500 매물
+    assert "비쌈" in _v, _v                                   # 호가 3 div(1200ex) vs 10ex
+    assert "한 계단 위: DPS 600" in _v and "2.00 div" in _v, _v
+    assert "매물 3개" in _v, _v
+    _v2 = price_verdict(_it, {"bows": [], "rates": {}})
+    assert "시세 데이터가 없습니다" in _v2
+    assert money_py(5, {"divine": 400}) == "5.00 ex" and money_py(800, {"divine": 400}) == "2.00 div"
+
+    # 환율 폴백: 수집 실패 스냅샷에서도 디바인 매물이 판정에서 사라지면 안 된다
+    _thin = {"taken_at": int(time.time() * 1000), "rates": {"exalted": {"rate": 1}},
+             "bows": [{"pdps": 500, "edps": 0, "price": 2, "cur": "divine", "rarity": "Rare"},
+                      {"pdps": 400, "edps": 0, "price": 9, "cur": "exalted", "rarity": "Rare"}]}
+    _r, _rt, _fb = market_rows(_thin)
+    assert len(_r) == 2 and _fb, (_r, _fb)                     # 디바인이 기본값으로 살아남고 폴백 표시
+    assert _rt["divine"] == DEFAULT_RATES["divine"]
+    assert "환율 일부 기본값" in price_verdict(_it, _thin)
+    _full = {"taken_at": int(time.time() * 1000),
+             "rates": {"exalted": {"rate": 1}, "divine": {"rate": 400}},
+             "bows": _thin["bows"]}
+    assert market_rows(_full)[2] is False                      # 다 재왔으면 폴백 아님
+
+    # merge_rates: 빠진 것만 이어 쓰고, 새 값이 있으면 새 값이 이긴다
+    _m = merge_rates({"exalted": {"rate": 1}}, {"divine": {"rate": 400}, "chaos": {"rate": 0}})
+    assert _m["divine"]["rate"] == 400 and _m["divine"]["how"] == "이전 수집분", _m
+    assert "chaos" not in _m                                    # 지난 값도 깨진 건 안 이어 쓴다
+    _m2 = merge_rates({"divine": {"rate": 410}}, {"divine": {"rate": 400}})
+    assert _m2["divine"]["rate"] == 410
+
     print("serve.py self-test PASS")
+
+
+
+
+# ---------- 게임 위 가격 체크 (v0.2, Windows 전용) ----------
+# 흐름: 전역 단축키 → 게임에 Ctrl+C 를 대신 눌러 아이템 복사(키 1회 = 행동 1회, GGG 규칙 내)
+#       → 클립보드 파싱 → 시장 곡선에서의 위치 계산 → 게임 위 작은 팝업.
+# 게임 메모리·파일은 절대 안 건드린다 — 클립보드 텍스트가 유일한 입력이다.
+
+def parse_item_text(text):
+    """게임 Ctrl+C 텍스트 → 활 한 마리. 페이지의 parseItem 과 같은 판정을 해야 한다
+    (자체 검증이 같은 픽스처를 공유한다). 확신이 없으면 None."""
+    if not text or "--------" not in text:
+        return None
+    parts = [p.strip() for p in text.replace("\r", "").split("--------")]
+    head = [l.strip() for l in parts[0].split("\n") if l.strip()]
+    it = {"name": "", "rarity": None, "pmin": 0.0, "pmax": 0.0, "emin": 0.0, "emax": 0.0,
+          "aps": 0.0, "crit": 0.0, "mods": [], "price": None, "cur": None}
+    names = []
+    for l in head:
+        m = re.match(r"(?:희귀도|Rarity)\s*:\s*(.+)", l)
+        if m:
+            r = m.group(1).strip()
+            it["rarity"] = {"희귀": "Rare", "Rare": "Rare", "고유": "Unique", "Unique": "Unique",
+                            "마법": "Magic", "Magic": "Magic", "일반": "Normal", "Normal": "Normal"}.get(r, r)
+        elif ":" not in l:
+            names.append(l)
+    it["name"] = " ".join(names).strip()
+
+    def num2(v):
+        m = re.search(r"([\d.]+)\s*[-~]\s*([\d.]+)", v)
+        return (float(m.group(1)), float(m.group(2))) if m else None
+    def num1(v):
+        m = re.search(r"[\d.]+", v)
+        return float(m.group()) if m else 0.0
+
+    for sec in parts[1:]:
+        for l in (x.strip() for x in sec.split("\n") if x.strip()):
+            m = re.match(r"(?:물리 피해|Physical Damage)\s*:\s*(.+)", l)
+            if m and num2(m.group(1)):
+                it["pmin"], it["pmax"] = num2(m.group(1)); continue
+            m = re.match(r"(?:원소 피해|Elemental Damage)\s*:\s*(.+)", l)
+            if m:                                        # 원소는 여러 쌍이 올 수 있다 — 전부 합산
+                for a, b in re.findall(r"([\d.]+)\s*[-~]\s*([\d.]+)", m.group(1)):
+                    it["emin"] += float(a); it["emax"] += float(b)
+                continue
+            m = re.match(r"(?:초당 공격 횟수|Attacks per Second)\s*:\s*(.+)", l)
+            if m:
+                it["aps"] = num1(m.group(1)); continue
+            m = re.match(r"(?:치명타 명중 확률|Critical Hit Chance)\s*:\s*(.+)", l)
+            if m:
+                it["crit"] = num1(m.group(1)); continue
+            m = re.search(r"~(?:b/o|price)\s+([\d.]+)\s+([a-z\-]+)", l)   # 매물 복사엔 호가가 붙는다
+            if m:
+                it["price"], it["cur"] = float(m.group(1)), m.group(2); continue
+            # 콜론 달린 안내줄(요구사항 등)은 옵션이 아니다 — 페이지 파서와 같은 휴리스틱
+            if ":" not in l and re.search(r"[\d#%]|추가|증가|감소|레벨|흡수|획득", l):
+                it["mods"].append(l)
+    if not it["aps"] or (not it["pmax"] and not it["emax"]):
+        return None
+    return it
+
+
+def item_dps(it):
+    p = (it["pmin"] + it["pmax"]) / 2.0 * it["aps"]
+    e = (it["emin"] + it["emax"]) / 2.0 * it["aps"]
+    return p, e, p + e
+
+
+def frontier_py(rows):
+    """페이지 frontier 와 같은 판정(동점 전원 생존) — DPS 내림차순 한 번 훑기."""
+    s = sorted(rows, key=lambda r: (-r["d"], r["p"]))
+    out, best, i = [], float("inf"), 0
+    while i < len(s):
+        j = i
+        while j < len(s) and s[j]["d"] == s[i]["d"]:
+            j += 1
+        gmin = s[i]["p"]
+        if gmin < best:
+            k = i
+            while k < j and s[k]["p"] == gmin:
+                out.append(s[k]); k += 1
+            best = gmin
+        i = j
+    out.reverse()
+    return out
+
+
+# 페이지의 RATE_DEFAULT 와 같은 값 — 환율 수집이 실패한 스냅샷에서도 축척이 살아야 한다.
+# 실제 사고: 교환 API 가 막힌 시간의 수집분에 엑잘 환율만 실려, 디바인 매물 135개가
+# 판정에서 통째로 사라졌었다. 기본값 폴백은 페이지가 이미 쓰는 방식이다.
+DEFAULT_RATES = {"exalted": 1.0, "chaos": 65.0, "divine": 300.0, "annul": 279.0}
+
+
+def market_rows(latest):
+    """latest.json → (d, p[엑잘], t, 기본값폴백여부). 페이지와 같은 기준: 희귀만, 아는 화폐만, 24시간 안."""
+    raw = latest.get("rates") or {}
+    rates, fb_curs = {}, set()
+    for c in set(list(raw) + list(DEFAULT_RATES)):
+        v = raw.get(c)
+        r = (v.get("rate") if isinstance(v, dict) else v) or 0
+        if not (isinstance(r, (int, float)) and r >= 1):
+            r = DEFAULT_RATES.get(c, 0)
+            if r and c != "exalted":
+                fb_curs.add(c)         # 기본값으로 채워진 화폐 — 실제로 쓰일 때만 폴백으로 친다
+        rates[c] = r
+    fell_back = False
+    cut = time.time() * 1000 - 24 * 3600 * 1000
+    out = []
+    for b in latest.get("bows") or []:
+        if (b.get("rarity") or "Rare") != "Rare":
+            continue
+        r = rates.get(b.get("cur")) or 0
+        if r <= 0 or not b.get("price"):
+            continue
+        if b.get("cur") in fb_curs:
+            fell_back = True           # 이 매물의 가격 환산에 기본값 환율이 실제로 쓰였다
+        t = b.get("t") or latest.get("taken_at") or 0
+        if t < cut:
+            continue
+        d = (b.get("pdps") or 0) + (b.get("edps") or 0)
+        if d > 0:
+            out.append({"d": d, "p": b["price"] * r, "t": t})
+    return out, rates, fell_back
+
+
+def money_py(v_ex, rates):
+    dv = rates.get("divine") or 0
+    if dv > 1 and abs(v_ex) >= dv:
+        v, unit = v_ex / dv, "div"
+    else:
+        v, unit = v_ex, "ex"
+    a = abs(v)
+    d = 0 if a >= 100 else 1 if a >= 10 else 2 if a >= 1 else 3 if a >= 0.1 else 4
+    return ("{:,.%df} {}" % d).format(v, unit)
+
+
+def price_verdict(it, latest):
+    """팝업에 띄울 판정문. 데이터가 왜 없는지까지 정확히 말한다."""
+    phys, ele, total = item_dps(it)
+    lines = ["%s" % (it["name"] or "이름 없는 활"),
+             "총 DPS %.0f  (물리 %.0f · 원소 %.0f)" % (total, phys, ele)]
+    if it["rarity"] not in (None, "Rare"):
+        lines.append("※ %s 등급 — 시세 곡선은 희귀 기준입니다" % it["rarity"])
+    rows, rates, rate_fallback = market_rows(latest)
+    if len(rows) < 2:
+        lines.append("시세 데이터가 없습니다 — 감정소에서 시세를 먼저 불러오세요")
+        return "\n".join(lines)
+    front = frontier_py(rows)
+    lo, hi = front[0], front[-1]
+    if total > hi["d"]:
+        lines.append("시장 관측 최고 DPS(%.0f)보다 높음 — 비교 대상 없음" % hi["d"])
+    else:
+        floor = None
+        for f in front:                          # 이 DPS 이상을 살 수 있는 최저가
+            if f["d"] >= total:
+                floor = f; break
+        if floor:
+            lines.append("이 DPS 시장 최저가: %s" % money_py(floor["p"], rates))
+            if it["price"] and rates.get(it["cur"]):
+                mine = it["price"] * rates[it["cur"]]
+                gap = (mine - floor["p"]) / floor["p"] * 100 if floor["p"] > 0 else 0
+                tag = "적정" if abs(gap) < 15 else ("싼 편!" if gap < 0 else "+%.0f%% 비쌈" % gap)
+                lines.append("이 매물 호가: %s → %s" % (money_py(mine, rates), tag))
+        base_d = floor["d"] if floor else total
+        nxt = next((f for f in front if f["d"] > base_d), None)
+        if nxt:
+            lines.append("한 계단 위: DPS %.0f 부터 %s" % (nxt["d"], money_py(nxt["p"], rates)))
+    offs = [m for m in it["mods"] if is_off_dps(m)][:3]
+    if offs:
+        lines.append("DPS 밖 옵션: " + " · ".join(clean_mod(m) for m in offs))
+    newest = max(r["t"] for r in rows)
+    age_h = (time.time() * 1000 - newest) / 3600000
+    lines.append("기준: 매물 %d개 · %s%s" % (len(rows), "방금 전" if age_h < 1 else "%.0f시간 전" % age_h,
+                                             " · 환율 일부 기본값" if rate_fallback else ""))
+    return "\n".join(lines)
+
+
+def read_clipboard_text():
+    import ctypes
+    u32, k32 = ctypes.windll.user32, ctypes.windll.kernel32
+    # 64비트에서 restype 을 안 밝히면 핸들·포인터가 32비트로 잘려 접근 위반으로 즉사한다
+    u32.GetClipboardData.restype = ctypes.c_void_p
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [ctypes.c_void_p]
+    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    for _ in range(10):
+        if u32.OpenClipboard(None):
+            try:
+                h = u32.GetClipboardData(13)          # CF_UNICODETEXT
+                if h:
+                    ptr = k32.GlobalLock(h)
+                    try:
+                        return ctypes.wstring_at(ptr) if ptr else ""
+                    finally:
+                        k32.GlobalUnlock(h)
+                return ""
+            finally:
+                u32.CloseClipboard()
+        time.sleep(0.03)
+    return ""
+
+
+def send_copy_keys():
+    """게임에 Ctrl+C 한 번 — 키 1회 = 행동 1회. 매크로 체인 없음."""
+    import ctypes
+    u32 = ctypes.windll.user32
+    VK_CONTROL, VK_C, KEYUP = 0x11, 0x43, 0x0002
+    u32.keybd_event(VK_CONTROL, 0, 0, 0)
+    u32.keybd_event(VK_C, 0, 0, 0)
+    u32.keybd_event(VK_C, 0, KEYUP, 0)
+    u32.keybd_event(VK_CONTROL, 0, KEYUP, 0)
+
+
+def check_under_cursor():
+    """단축키 한 번의 전체 처리 — 팝업에 넣을 문자열을 돌려준다."""
+    import ctypes
+    u32 = ctypes.windll.user32
+    seq0 = u32.GetClipboardSequenceNumber()
+    send_copy_keys()
+    for _ in range(30):                          # 게임이 클립보드를 채울 때까지 최대 0.6초
+        time.sleep(0.02)
+        if u32.GetClipboardSequenceNumber() != seq0:
+            break
+    text = read_clipboard_text()
+    it = parse_item_text(text)
+    if not it:
+        return "아이템을 읽지 못했습니다\n(마우스를 활 위에 두고 눌러주세요)"
+    try:
+        with open(LATEST, encoding="utf-8") as f:
+            latest = json.load(f)
+    except Exception:
+        latest = {}
+    return price_verdict(it, latest)
+
+
+def run_overlay():
+    """tk 메인루프(팝업) + 단축키 스레드. 게임 위에 뜨는 건 topmost 라벨 하나뿐이다."""
+    import ctypes, queue, tkinter as tk
+    u32 = ctypes.windll.user32
+    q = queue.Queue()
+
+    def hotkey_thread():
+        MOD_CONTROL, MOD_SHIFT, WM_HOTKEY = 0x0002, 0x0004, 0x0312
+        name = "Ctrl+D"
+        if not u32.RegisterHotKey(None, 1, MOD_CONTROL, ord("D")):
+            name = "Ctrl+Shift+D"                # Awakened 등과 겹치면 한 칸 비켜난다
+            if not u32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_SHIFT, ord("D")):
+                print("단축키 등록 실패 — 가격 체크 없이 계속합니다")
+                return
+        print("가격 체크 단축키: %s (게임에서 활 위에 마우스를 두고 누르세요)" % name)
+        msg = ctypes.wintypes.MSG()
+        while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            if msg.message == WM_HOTKEY:
+                q.put("check")
+
+    import ctypes.wintypes
+    threading.Thread(target=hotkey_thread, daemon=True).start()
+
+    root = tk.Tk()
+    root.withdraw()
+    popup = {"win": None}
+
+    def show(text):
+        if popup["win"]:
+            try: popup["win"].destroy()
+            except Exception: pass
+        w = tk.Toplevel(root)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        pt = ctypes.wintypes.POINT()
+        u32.GetCursorPos(ctypes.byref(pt))
+        w.geometry("+%d+%d" % (pt.x + 18, pt.y + 18))
+        tk.Label(w, text=text, justify="left", font=("Malgun Gothic", 10),
+                 bg="#161b23", fg="#e9ebef", padx=14, pady=10,
+                 highlightthickness=1, highlightbackground="#d5a35a").pack()
+        w.bind("<Button-1>", lambda e: w.destroy())
+        w.after(8000, w.destroy)
+        popup["win"] = w
+
+    def poll():
+        try:
+            while True:
+                q.get_nowait()
+                show(check_under_cursor())
+        except queue.Empty:
+            pass
+        root.after(50, poll)
+
+    root.after(50, poll)
+    root.mainloop()
 
 
 def arg(name, default=None):
@@ -1447,6 +1811,14 @@ def arg(name, default=None):
 if __name__ == "__main__":
     if "--test" in sys.argv:
         demo()
+        sys.exit(0)
+
+    if "--check-clip" in sys.argv:            # 진단: 지금 클립보드의 아이템을 판정해 출력
+        it = parse_item_text(read_clipboard_text())
+        if not it:
+            sys.exit("클립보드에서 아이템을 읽지 못했습니다")
+        with open(LATEST, encoding="utf-8") as f:
+            print(price_verdict(it, json.load(f)))
         sys.exit(0)
 
     if "--collect" in sys.argv:
@@ -1475,4 +1847,13 @@ if __name__ == "__main__":
     bootstrap_latest()
     if "--nobrowser" not in sys.argv:
         webbrowser.open(url)
-    ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    if os.name == "nt" and "--nohotkey" not in sys.argv:
+        # 서버는 스레드로, 메인 스레드는 게임 위 가격 체크(tk 는 메인 스레드여야 한다)
+        srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            run_overlay()
+        except KeyboardInterrupt:
+            pass
+    else:
+        ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
