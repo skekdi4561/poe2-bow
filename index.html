@@ -669,13 +669,27 @@ const harvestRows = d => (isPlainObject(d) && Array.isArray(d.rows))
 // 스냅샷·채집·직접 등록 전부 같은 규칙이다 (섞이면 어느 시점 시세인지가 흐려진다).
 const ROW_TTL = 24 * 60 * 60 * 1000;
 const isFresh = (b, cut) => typeof b.t === 'number' && b.t >= cut;
+// 채집 매물을 합칠 때, 같은 매물(id)이 스냅샷에도 있으면 더 최근 관측만 남긴다 —
+// 스냅샷에 id 가 생기면서 닫을 수 있게 된 마지막 중복 구멍. 가격이 바뀐 매물은 최신이 정답이다.
+function mergeHarvest(list, rows){
+  const hvById = new Map(rows.map(r => [r.id, r]));
+  const kept = list.filter(b => {
+    if (b.hv) return false;                    // 지난 채집분은 통째로 갈아끼운다
+    const h = b.id && hvById.get(b.id);
+    if (h) {
+      if (typeof b.t === 'number' && b.t >= h.t) { hvById.delete(b.id); return true; }
+      return false;                            // 채집 관측이 더 최신 — 스냅샷 쪽을 버린다
+    }
+    return true;
+  });
+  return kept.concat([...hvById.values()].map(r => Object.assign({}, r, { hv: true })));
+}
 function loadHarvest(){
   const cut = Date.now() - ROW_TTL;
   const rows = harvestRows(readStore('poe2harvest', null, isPlainObject))
     .filter(r => typeof r.t === 'number' && r.t >= cut);
   if (!rows.length) return 0;
-  // 스냅샷(snap)과 같은 규칙: 내 표식(hv)이 붙은 지난 것은 버리고 최신으로 갈아끼운다
-  bows = bows.filter(b => !b.hv).concat(rows.map(r => Object.assign({}, r, { hv: true })));
+  bows = mergeHarvest(bows, rows);
   return rows.length;
 }
 window.addEventListener('poe2harvest-updated', () => {
@@ -1477,6 +1491,17 @@ $('trade-go').addEventListener('click', async () => {
     const hv2 = harvestRows({ rows: [{ id: 'a', mods: ['정상 옵션', 7, null, '둘째'] }] })[0];
     if (hv2.mods.length !== 2 || hv2.mods[0] !== '정상 옵션') throw new Error('harvestRows mods 잡원소');
     if (harvestRows({ rows: [{ id: 123 }, { id: '' }] }).length) throw new Error('harvestRows id 타입');
+
+    // 채집 ↔ 스냅샷 교차 중복: 같은 id 는 더 최근 관측만 남는다
+    const snapRow = { id: 'L1', name: '스냅샷것', t: 1000, snap: true };
+    const other = { id: 'L2', name: '무관한것', t: 1000, snap: true };
+    let m = mergeHarvest([snapRow, other], [{ id: 'L1', name: '채집것', t: 2000 }]);
+    if (m.length !== 2 || !m.some(b => b.name === '채집것') || m.some(b => b.name === '스냅샷것'))
+      throw new Error('채집이 최신이면 스냅샷 쪽을 버려야 함');
+    m = mergeHarvest([{ id: 'L1', name: '스냅샷것', t: 3000, snap: true }], [{ id: 'L1', name: '채집것', t: 2000 }]);
+    if (m.length !== 1 || m[0].name !== '스냅샷것') throw new Error('스냅샷이 최신이면 채집 쪽을 버려야 함');
+    m = mergeHarvest([{ id: 'L9', name: '지난채집', t: 1, hv: true }], [{ id: 'L9', name: '새채집', t: 2 }]);
+    if (m.length !== 1 || m[0].name !== '새채집') throw new Error('지난 채집분 갈아끼우기');
 
     // 축 눈금과 가격 칸이 같은 자릿수 규칙을 쓰는지 — 갈라지면 작은 값이 "0.00" 으로 뭉갠다
     if (decimalsFor(0.0025) !== 4 || decimalsFor(0.25) !== 3 || decimalsFor(2.5) !== 2
