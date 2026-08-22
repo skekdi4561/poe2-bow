@@ -865,16 +865,42 @@ def recent_rows(hours=24):
     return out
 
 
-def merge_rates(new, old):
-    """이번 수집에서 빠진 화폐 환율은 지난 스냅샷 값을 이어 쓴다 — 교환 API 가 잠깐 막혔다고
-    시세 전체의 축척이 무너지는 것을 막는다(21:59 수집분에서 실제로 벌어진 사고)."""
-    out = dict(new or {})
-    for c, v in (old or {}).items():
-        if c in out:
+def rate_memory(hours=48):
+    """DB 최근 스냅샷들에서 화폐별 환율 기억을 만든다 — 최근 관측 최대 3개의 중앙값.
+
+    직전 한 장만 이어 쓰면 독버섯이 그대로 상속된다(실제 사고: 17:04 수집이 "디바인 10엑잘"
+    미끼 매물을 min 으로 믿었고, 그 뒤 수집들은 거래쌍을 아예 못 잡아 빈손이었다).
+    [10, 400, 300] 의 중앙값 300 처럼, 중앙값은 한 번의 독버섯을 자동으로 걸러낸다."""
+    cut = int((time.time() - hours * 3600) * 1000)
+    seen = {}
+    try:
+        with db() as con:
+            for (raw,) in con.execute(
+                    "SELECT rates FROM snapshots WHERE taken_at >= ? ORDER BY id DESC", (cut,)):
+                for c, v in (json.loads(raw or "{}")).items():
+                    r = (v.get("rate") if isinstance(v, dict) else v) or 0
+                    if isinstance(r, (int, float)) and r >= 1 and len(seen.setdefault(c, [])) < 3:
+                        seen[c].append(r)
+    except Exception:
+        pass
+    return {c: sorted(v)[len(v) // 2] for c, v in seen.items() if v}
+
+
+def guard_rates(measured, memory):
+    """이번 관측을 기억과 대조한다. 빠진 화폐는 기억으로 메우고,
+    직전 기억의 1/3 미만으로 급락한 관측은 독버섯으로 보고 기억을 유지한다
+    (min 집계라 위쪽 사기는 원래 안 잡힌다 — 위험한 건 "싸게 파는 척" 아래쪽뿐)."""
+    out = dict(measured or {})
+    for c, m in memory.items():
+        if c == "exalted":
             continue
-        r = (v.get("rate") if isinstance(v, dict) else v) or 0
-        if isinstance(r, (int, float)) and r >= 1:
-            out[c] = {"rate": r, "how": "이전 수집분"}
+        got = out.get(c)
+        r = (got.get("rate") if isinstance(got, dict) else got) if got else None
+        if r is None:
+            out[c] = {"rate": m, "how": "이전 수집분"}
+        elif r < m / 3.0:
+            print("     %s 환율 %g 는 기억(%g)의 1/3 미만 — 독버섯 의심, 이전 값 유지" % (c, r, m))
+            out[c] = {"rate": m, "how": "급변 의심, 이전 값 유지 (관측 %g)" % r}
     return out
 
 
@@ -892,11 +918,7 @@ def collect(url, limit=100):
               % (q0.get("status"),))
         print("     !! 사이트 문구와 어긋납니다 — 검색 필터를 확인하세요.")
     rates = fetch_rates(base, league, TRADE_CURRENCIES)
-    try:
-        with open(LATEST, encoding="utf-8") as _f:
-            rates = merge_rates(rates, json.load(_f).get("rates"))
-    except Exception:
-        pass
+    rates = guard_rates(rates, rate_memory())
 
     bows, total, skipped, base, league = load_banded(url, limit)
 
@@ -1503,12 +1525,31 @@ def demo():
              "bows": _thin["bows"]}
     assert market_rows(_full)[2] is False                      # 다 재왔으면 폴백 아님
 
-    # merge_rates: 빠진 것만 이어 쓰고, 새 값이 있으면 새 값이 이긴다
-    _m = merge_rates({"exalted": {"rate": 1}}, {"divine": {"rate": 400}, "chaos": {"rate": 0}})
-    assert _m["divine"]["rate"] == 400 and _m["divine"]["how"] == "이전 수집분", _m
-    assert "chaos" not in _m                                    # 지난 값도 깨진 건 안 이어 쓴다
-    _m2 = merge_rates({"divine": {"rate": 410}}, {"divine": {"rate": 400}})
-    assert _m2["divine"]["rate"] == 410
+    # guard_rates: 빠진 화폐는 기억으로 메우고, 급락 관측은 독버섯으로 걸러낸다
+    _mem = {"divine": 400.0, "annul": 160.0}
+    _g = guard_rates({"exalted": {"rate": 1}}, _mem)
+    assert _g["divine"]["rate"] == 400 and _g["divine"]["how"] == "이전 수집분", _g
+    _g2 = guard_rates({"divine": {"rate": 10}}, _mem)          # 17:04 실사고 재현 — 10 은 400 의 1/3 미만
+    assert _g2["divine"]["rate"] == 400 and "급변 의심" in _g2["divine"]["how"], _g2
+    _g3 = guard_rates({"divine": {"rate": 350}}, _mem)         # 정상 변동은 관측이 이긴다
+    assert _g3["divine"]["rate"] == 350
+    _g4 = guard_rates({"divine": {"rate": 900}}, _mem)         # 위쪽은 min 집계가 지키므로 통과
+    assert _g4["divine"]["rate"] == 900
+
+    # rate_memory: 독버섯이 낀 이력에서 중앙값이 진짜 값을 살려내는지 (임시 DB)
+    keep_db3 = DB
+    d4 = tempfile.mkdtemp(); DB = os.path.join(d4, "m.db")
+    try:
+        now_ms = int(time.time() * 1000)
+        with db() as con:
+            for i, r in enumerate(({"divine": {"rate": 10}},      # 최신 = 독버섯
+                                    {"divine": {"rate": 400}},
+                                    {"divine": {"rate": 300}})):
+                con.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                            (now_ms - i * 3600000, "u", json.dumps(r)))
+        assert rate_memory()["divine"] == 300, rate_memory()   # [10,400,300] 의 중앙값
+    finally:
+        DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
 
     print("serve.py self-test PASS")
 
