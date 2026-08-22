@@ -1768,7 +1768,8 @@ def send_copy_keys():
     """게임에 Ctrl+C 한 번 — 키 1회 = 행동 1회. 매크로 체인 없음."""
     import ctypes
     u32 = ctypes.windll.user32
-    VK_CONTROL, VK_C, KEYUP = 0x11, 0x43, 0x0002
+    VK_CONTROL, VK_C, VK_ALT, KEYUP = 0x11, 0x43, 0x12, 0x0002
+    u32.keybd_event(VK_ALT, 0, KEYUP, 0)   # 사용자가 Alt+D 를 누른 채면 Alt 부터 놓아야 Ctrl+C 가 먹는다
     u32.keybd_event(VK_CONTROL, 0, 0, 0)
     u32.keybd_event(VK_C, 0, 0, 0)
     u32.keybd_event(VK_C, 0, KEYUP, 0)
@@ -1804,11 +1805,12 @@ def run_overlay():
     q = queue.Queue()
 
     def hotkey_thread():
-        MOD_CONTROL, MOD_SHIFT, WM_HOTKEY = 0x0002, 0x0004, 0x0312
-        name = "Ctrl+D"
-        if not u32.RegisterHotKey(None, 1, MOD_CONTROL, ord("D")):
-            name = "Ctrl+Shift+D"                # Awakened 등과 겹치면 한 칸 비켜난다
-            if not u32.RegisterHotKey(None, 1, MOD_CONTROL | MOD_SHIFT, ord("D")):
+        # 기본 Alt+D — POE2 는 WASD 조작이 대세라 Ctrl+D 는 이동(D)과 충돌한다(사용자 지정)
+        MOD_ALT, MOD_SHIFT, WM_HOTKEY = 0x0001, 0x0004, 0x0312
+        name = "Alt+D"
+        if not u32.RegisterHotKey(None, 1, MOD_ALT, ord("D")):
+            name = "Alt+Shift+D"                 # 다른 도구와 겹치면 한 칸 비켜난다
+            if not u32.RegisterHotKey(None, 1, MOD_ALT | MOD_SHIFT, ord("D")):
                 print("단축키 등록 실패 — 가격 체크 없이 계속합니다")
                 return
         print("가격 체크 단축키: %s (게임에서 활 위에 마우스를 두고 누르세요)" % name)
