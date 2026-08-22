@@ -809,7 +809,13 @@ def collect(url, limit=100):
 
     # 환율을 먼저 뜬다. 곡선의 세로 축척 전체가 여기 걸려 있고, 요청도 훨씬 적어서
     # 문제가 있으면 4분짜리 아이템 수집을 시작하기 전에 드러난다.
-    base, _, league, _ = resolve_search(url)
+    base, _, league, q0 = resolve_search(url)
+    # 사이트가 "즉시 구매 가능 매물만 집계"라고 공언한다 — 저장 검색이 바뀌면 그 문구가
+    # 거짓말이 되므로, securable 이 아니면 크게 알린다(수집은 계속한다).
+    if (q0.get("status") or {}).get("option") != "securable":
+        print("     !! 경고: 저장 검색의 상태가 '즉시 구매 가능'(securable)이 아닙니다: %r"
+              % (q0.get("status"),))
+        print("     !! 사이트 문구와 어긋납니다 — 검색 필터를 확인하세요.")
     rates = fetch_rates(base, league, TRADE_CURRENCIES)
 
     bows, total, skipped, base, league = load_banded(url, limit)
@@ -1290,6 +1296,9 @@ def demo():
         assert push_latest(g) == "same"               # 같은 내용 -> 커밋 없이 생략
     finally:
         shutil.rmtree(g, ignore_errors=True)
+
+    # collect() 의 securable 경고: 대역 resolve_search 가 securable 아님 -> 경고가 찍혀야 한다
+    # (위 수집기 자체 검증의 대역이 이미 status 없는 질의문을 쓰므로, 경고 경로는 그 실행에서 돈다)
 
     print("serve.py self-test PASS")
 
