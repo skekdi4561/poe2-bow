@@ -824,14 +824,23 @@ def recent_rows(hours=24):
             " b.price, b.cur, b.rarity, b.mods, b.cond FROM bows b"
             " JOIN snapshots s ON s.id = b.snapshot_id WHERE s.taken_at >= ?"
             " ORDER BY s.taken_at DESC, b.rowid ASC", (cut,)).fetchall()
-    out, seen = [], set()
+    out, seen, fps = [], set(), set()
     for lid, sid, taken, name, pdps, edps, aps, crit, price, cur, rarity, mods, cond in rows:
+        # 중복 판정은 조건 그룹 안에서만 한다 — 같은 매물이 기준 검색과 조건 검색 양쪽에서
+        # 잡히는 건 중복이 아니라 두 곡선이 공유하는 점이다(지우면 조건 곡선이 구멍 난다).
         if lid:
-            if lid in seen:
+            if (cond, lid) in seen:
                 continue                     # 같은 매물 재관측 — 더 최근 것이 이미 들어갔다
-            seen.add(lid)
+            seen.add((cond, lid))
         elif sid != latest_snap:
             continue                         # id 없는 옛 행은 최신 스냅샷 것만
+        # 레어의 옵션·롤까지 전부 같을 확률은 사실상 0 — 지문이 같으면 같은 물건이다.
+        # 내렸다 다시 올리면 id 가 바뀌는데 이걸로 잡는다. 가격은 지문에서 뺀다:
+        # 재등록하며 가격을 바꾼 경우 "같은 활의 최신 가격"만 남는 게 맞다.
+        fp = (cond, name, pdps, edps, aps, crit, mods)
+        if fp in fps:
+            continue
+        fps.add(fp)
         out.append({"id": lid or "", "name": name, "pdps": pdps, "edps": edps, "aps": aps,
                     "crit": crit, "price": price, "cur": cur, "rarity": rarity,
                     "mods": json.loads(mods or "[]"), "cond": cond, "t": taken})
@@ -1363,7 +1372,17 @@ def demo():
             con.execute(ins_b, (s_a, "그때만본활", 200, 0, 1, 1, 9, "divine", "Rare", "[]", None, "B"))
             con.execute(ins_b, (s_b, "재관측활", 100, 0, 1, 1, 4, "divine", "Rare", "[]", None, "A"))
             con.execute(ins_b, (s_b, "id없는활", 1, 0, 1, 1, 1, "divine", "Rare", "[]", None, ""))
-        names = [r["name"] for r in recent_rows(24)]
+            # 재등록(새 id, 같은 롤): 지문으로 잡아 최신 가격만 남아야 한다
+            con.execute(ins_b, (s_a, "쌍둥이", 300, 0, 1.2, 5, 9, "divine", "Rare", '["옵션 +1"]', None, "C1"))
+            con.execute(ins_b, (s_b, "쌍둥이", 300, 0, 1.2, 5, 7, "divine", "Rare", '["옵션 +1"]', None, "C2"))
+            # 같은 매물이 기준·조건 양쪽에서 잡힌 경우: 둘 다 살아야 조건 곡선이 안 뚫린다
+            con.execute(ins_b, (s_b, "겸용활", 400, 0, 1.2, 5, 9, "divine", "Rare", "[]", None, "D"))
+            con.execute(ins_b, (s_b, "겸용활", 400, 0, 1.2, 5, 9, "divine", "Rare", "[]", "치명 조건", "D"))
+        merged = recent_rows(24)
+        names = [r["name"] for r in merged]
+        twins = [r for r in merged if r["name"] == "쌍둥이"]
+        assert len(twins) == 1 and twins[0]["price"] == 7, twins   # 재등록 = 같은 물건, 최신 가격
+        assert names.count("겸용활") == 2, names                    # 조건 곡선의 점은 안 지운다
         assert "옛활" not in names, names                          # 24시간 밖은 잘린다
         assert "재관측활" in names and "지난시간활" not in names, names   # 같은 id 는 최신만
         assert "그때만본활" in names and "id없는활" in names, names       # 합집합 + 최신 무id 유지
