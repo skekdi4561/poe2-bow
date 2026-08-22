@@ -1560,6 +1560,15 @@ def demo():
     finally:
         DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
 
+    # 단축키 문구 해석: 펑션키/수식키 조합/잡문구
+    assert parse_hotkey("F6") == (0, 0x75, "F6")
+    assert parse_hotkey("f12") == (0, 0x7B, "F12")
+    assert parse_hotkey("Ctrl+X") == (0x0002, ord("X"), "Ctrl+X")
+    assert parse_hotkey("alt+shift+p") == (0x0001 | 0x0004, ord("P"), "Alt+Shift+P")
+    assert parse_hotkey("Control + F2") == (0x0002, 0x71, "Ctrl+F2")
+    assert parse_hotkey("") is None and parse_hotkey("Ctrl+") is None
+    assert parse_hotkey("무슨키") is None and parse_hotkey("F13") is None
+
     print("serve.py self-test PASS")
 
 
@@ -1798,6 +1807,51 @@ def check_under_cursor():
     return price_verdict(it, latest)
 
 
+# 기본 F6 — WASD 조작(이동 WASD·회피 Space·스킬 QERT)의 어느 손 위치와도 안 겹치는
+# 수식키 없는 펑션키. 사람마다 배치가 달라서 파일 한 줄로 바꿀 수 있게 한다.
+HOTKEY_DEFAULT = "F6"
+HOTKEY_FILE = os.path.join(ROOT, "hotkey.txt")
+
+
+def parse_hotkey(text):
+    """"Ctrl+Shift+X" / "F7" 같은 문구 → (수식키 비트, 가상키 코드, 표준 표기). 못 읽으면 None."""
+    MODS = {"CTRL": 0x0002, "CONTROL": 0x0002, "ALT": 0x0001, "SHIFT": 0x0004, "WIN": 0x0008}
+    mods, vk, names = 0, None, []
+    for part in re.split(r"[+\-\s]+", (text or "").strip()):
+        if not part:
+            continue
+        up = part.upper()
+        if up in MODS:
+            mods |= MODS[up]
+            names.append({"CONTROL": "Ctrl"}.get(up, up.capitalize()))
+        elif re.fullmatch(r"F([1-9]|1[0-2])", up):
+            vk = 0x70 + int(up[1:]) - 1
+            names.append(up)
+        elif re.fullmatch(r"[A-Z0-9]", up):
+            vk = ord(up)
+            names.append(up)
+        else:
+            return None
+    return (mods, vk, "+".join(names)) if vk is not None else None
+
+
+def load_hotkey():
+    """hotkey.txt 의 첫 줄을 읽는다. 없거나 못 읽으면 기본값을 쓰고 파일을 만들어 둔다."""
+    try:
+        with open(HOTKEY_FILE, encoding="utf-8") as f:
+            got = parse_hotkey(f.readline())
+            if got:
+                return got
+            print("hotkey.txt 를 읽지 못해 기본값(%s)을 씁니다" % HOTKEY_DEFAULT)
+    except FileNotFoundError:
+        try:
+            with open(HOTKEY_FILE, "w", encoding="utf-8") as f:
+                f.write(HOTKEY_DEFAULT + "\n")
+        except OSError:
+            pass
+    return parse_hotkey(HOTKEY_DEFAULT)
+
+
 def run_overlay():
     """tk 메인루프(팝업) + 단축키 스레드. 게임 위에 뜨는 건 topmost 라벨 하나뿐이다."""
     import ctypes, queue, tkinter as tk
@@ -1805,15 +1859,13 @@ def run_overlay():
     q = queue.Queue()
 
     def hotkey_thread():
-        # 기본 Alt+D — POE2 는 WASD 조작이 대세라 Ctrl+D 는 이동(D)과 충돌한다(사용자 지정)
-        MOD_ALT, MOD_SHIFT, WM_HOTKEY = 0x0001, 0x0004, 0x0312
-        name = "Alt+D"
-        if not u32.RegisterHotKey(None, 1, MOD_ALT, ord("D")):
-            name = "Alt+Shift+D"                 # 다른 도구와 겹치면 한 칸 비켜난다
-            if not u32.RegisterHotKey(None, 1, MOD_ALT | MOD_SHIFT, ord("D")):
-                print("단축키 등록 실패 — 가격 체크 없이 계속합니다")
-                return
+        WM_HOTKEY = 0x0312
+        mods, vk, name = load_hotkey()
+        if not u32.RegisterHotKey(None, 1, mods, vk):
+            print("단축키 %s 등록 실패(다른 프로그램이 선점) — %s 로 바꿔보세요" % (name, HOTKEY_FILE))
+            return
         print("가격 체크 단축키: %s (게임에서 활 위에 마우스를 두고 누르세요)" % name)
+        print("  바꾸려면 %s 에 원하는 키를 적고 재시작 (예: F7, Ctrl+X, Alt+Shift+P)" % HOTKEY_FILE)
         msg = ctypes.wintypes.MSG()
         while u32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             if msg.message == WM_HOTKEY:
