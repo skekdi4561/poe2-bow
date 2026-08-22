@@ -1411,7 +1411,9 @@ if __name__ == "__main__":
         if not url:
             sys.exit('거래소 검색 URL 이 필요합니다:\n'
                      '  python serve.py --collect "https://.../trade2/search/poe2/..."')
-        limit = int(arg("--limit", "10"))     # 문턱값 하나당 몇 개까지 뜰지
+        # 밴드당 25개: 검색 요청은 그대로(한 번에 100 id 를 받으므로)이고 fetch 만 는다.
+        # 실측 예산 — fetch 6시간 1000회 중 시간당 수집 시 ~470회 사용. 표본 목표 5,000개의 1단계.
+        limit = int(arg("--limit", "25"))     # 문턱값 하나당 몇 개까지 뜰지
         every = arg("--every")
         if not os.environ.get("POESESSID"):
             print("참고: POESESSID 미설정 — 거래소가 로그인을 요구하면 파일 맨 위 설명을 보세요.")

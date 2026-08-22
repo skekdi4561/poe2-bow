@@ -489,13 +489,25 @@ function money(vEx){
   return fmt(v, decimalsFor(v)) + ' ' + (UNIT_LABEL[u] || u);
 }
 
-// 파레토 최전선: 자기보다 DPS가 높거나 같으면서 더 싼 활이 없는 것들
-// ponytail: O(n²) 전수 비교. 실측 — 100개 16ms, 500개 74ms, 2000개 288ms(드래그가 끊김), 5000개 721ms.
-// 스냅샷 기본이 100개라 지금은 남는다. 500개를 넘길 일이 생기면 DPS 내림차순 정렬 후
-// 최저가를 들고 한 번만 훑는 O(n log n) 방식으로 바꿀 것(동점 매물 처리만 주의).
+// 파레토 최전선: 자기보다 DPS가 높거나 같으면서 더 싼 활이 없는 것들.
+// DPS 내림차순 정렬 후 한 번 훑기 O(n log n) — 표본 목표 5,000개에서 O(n²) 전수 비교는
+// 렌더마다 700ms(실측)를 태워서 교체. 같은 (DPS,가격) 동점 매물이 전부 살아남는 판정까지
+// 전수 비교와 동일하다(동점 전원이 "최전선" 딱지를 받아야 표가 맞다).
 function frontier(list){
-  return list.filter(a => !list.some(o => o !== a && o.d >= a.d && o.p <= a.p && (o.d > a.d || o.p < a.p)))
-             .sort((x, y) => x.d - y.d);
+  const s = [...list].sort((a, b) => b.d - a.d || a.p - b.p);
+  const out = [];
+  let best = Infinity;                  // 더 높은 DPS 쪽에서 지금까지 본 최저가
+  for (let i = 0; i < s.length; ) {
+    let j = i;                          // 같은 DPS 묶음 [i, j) — 가격 오름차순
+    while (j < s.length && s[j].d === s[i].d) j++;
+    const gmin = s[i].p;
+    if (gmin < best) {
+      for (let k = i; k < j && s[k].p === gmin; k++) out.push(s[k]);
+      best = gmin;
+    }
+    i = j;
+  }
+  return out.reverse();                 // DPS 오름차순으로 (기존 계약 유지)
 }
 
 // 예산으로 살 수 있는 최대 DPS. 사는 사람의 질문은 "이 DPS가 얼마냐"가 아니라
@@ -1366,6 +1378,12 @@ $('trade-go').addEventListener('click', async () => {
     if (distinctPts([{ d: 1, p: 2 }, { d: 1, p: 2 }, { d: 1, p: 2 }]) !== 1) throw new Error('distinctPts dup');
     if (distinctPts([{ d: 1, p: 2 }, { d: 1, p: 3 }]) !== 2) throw new Error('distinctPts diff');
     if (distinctPts([]) !== 0) throw new Error('distinctPts empty');
+
+    // 새 frontier 가 전수 비교와 같은 동점 판정을 하는지
+    if (frontier([{ d: 1, p: 2 }, { d: 1, p: 2 }]).length !== 2) throw new Error('동점 전원 생존');
+    if (frontier([{ d: 1, p: 2 }, { d: 1, p: 3 }]).length !== 1) throw new Error('같은 DPS 비싼 쪽 탈락');
+    if (frontier([{ d: 2, p: 2 }, { d: 1, p: 2 }]).length !== 1) throw new Error('높은 DPS 같은 가격이 지배');
+    if (frontier([]).length !== 0) throw new Error('빈 목록');
 
     // 저장값이 깨져 있어도 부팅은 되어야 한다 — 모양까지 확인하는지
     const store = {};
