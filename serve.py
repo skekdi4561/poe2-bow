@@ -306,8 +306,9 @@ def pair_rate(base, league, have, want):
 
 
 def best_offer(vals):
-    """1개를 손에 넣는 가장 싼 값. 사기 매물은 언제나 비싼 쪽이므로 최저가면 걸러진다
-    (실측 divine->chaos 6건 중 4건이 1:1, 7:1 사기 — 중앙값을 쓰면 사기값이 나온다)."""
+    """우회 경로용 최저가. 직접 환율에는 쓰지 않는다 — "디바인 10엑잘" 같은 미끼 하나가
+    min 을 통째로 뚫는 실사고가 있었다(#15~17). 우회 쌍(divine->chaos 등)은 사기가
+    과반인 경우가 있어 중앙값이 오히려 위험하므로 여기만 min 을 유지한다."""
     return min(vals)
 
 
@@ -328,7 +329,9 @@ def solve_rates(obs, base_cur="exalted", rounds=MAX_HOPS):
 
     for (have, want), r in rate.items():                  # 1단계: 직접 매물
         if have == base_cur and want != base_cur:
-            val[want] = r
+            # 직접 환율은 매물들의 중앙값 — 로그의 표시값(중앙값)은 380·410 으로 정상인데
+            # min 은 10(미끼)을 집던 실사고의 근본 수정. 미끼 소수는 중앙값을 못 움직인다.
+            val[want] = median(obs[(have, want)])
             how[want] = "직접"
 
     for _ in range(rounds):                               # 2단계: 남은 것만 우회로 메움
@@ -878,9 +881,9 @@ def rate_memory(hours=48):
             for (raw,) in con.execute(
                     "SELECT rates FROM snapshots WHERE taken_at >= ? ORDER BY id DESC", (cut,)):
                 for c, v in (json.loads(raw or "{}")).items():
-                    # 기억은 관측 원본(obs)으로 만든다 — 거부돼 유지된 값이 아니라 실제로 본 값.
-                    # 그래야 시세가 진짜로 움직였을 때 두세 번 관측이면 중앙값이 따라간다.
-                    r = (v.get("obs", v.get("rate")) if isinstance(v, dict) else v) or 0
+                    # 기억은 "받아들여진 값"으로만 만든다 — 거부된 관측(obs)을 섞으면
+                    # 상주 사기가 기억을 점령한다(실사고 #15~17). 소급 정정된 행도 rate 를 쓴다.
+                    r = (v.get("rate") if isinstance(v, dict) else v) or 0
                     if isinstance(r, (int, float)) and r >= 1 and len(seen.setdefault(c, [])) < 3:
                         seen[c].append(r)
     except Exception:
@@ -905,9 +908,10 @@ def guard_rates(measured, memory):
             # 바가지 호가(실사고: 소멸 5000엑잘). 관측 원본(obs)은 남겨서 진짜 시세 변동이면
             # 다음 수집들의 중앙값이 따라가게 한다 — 거부가 교착이 되지 않는 장치.
             print("     %s 환율 %g 는 기억(%g)의 3배 밖 — 독버섯 의심, 이전 값 유지" % (c, r, m))
-            out[c] = {"rate": m, "how": "급변 의심, 이전 값 유지 (관측 %g)" % r, "obs": r}
-        elif isinstance(got, dict):
-            got["obs"] = r
+            # 관측값은 how 문구로만 남긴다. obs 필드로 기억에 넣었더니, 매시간 상주하는
+            # 사기 매물이 세 번 만에 기억의 중앙값을 점령해 "직접"으로 승격된 실사고(#15~17).
+            # 진짜 시세 급변은 직접 환율이 중앙값이 된 뒤로는 관측 자체가 옮겨가므로 따라간다.
+            out[c] = {"rate": m, "how": "급변 의심, 이전 값 유지 (관측 %g)" % r}
     return out
 
 
@@ -1040,7 +1044,10 @@ def demo():
             ("chaos", "divine"): [5, 5.1], ("divine", "chaos"): [1 / 5],
             ("chaos", "annul"): [4.2], ("annul", "divine"): [1 / 0.83]}
     v, how = solve_rates(full)
-    assert (v["chaos"], v["divine"], v["annul"]) == (59, 300, 250), v
+    assert (v["chaos"], v["divine"], v["annul"]) == (60, 302.5, 250), v   # 직접 = 중앙값
+    # 실사고 재현: 미끼 10 이 하나 껴도 중앙값은 진짜 시세를 지킨다 (min 이면 10 에 뚫림)
+    vv, _ = solve_rates({("exalted", "divine"): [10, 380, 440]})
+    assert vv["divine"] == 380, vv
     assert how["divine"] == "직접"
 
     no_direct = {k: x for k, x in full.items() if k != ("exalted", "divine")}
@@ -1052,7 +1059,7 @@ def demo():
     tempting = dict(full)
     tempting[("chaos", "divine")] = [0.001]
     v3, how3 = solve_rates(tempting)
-    assert v3["divine"] == 300 and how3["divine"] == "직접", (v3["divine"], how3["divine"])
+    assert v3["divine"] == 302.5 and how3["divine"] == "직접", (v3["divine"], how3["divine"])  # 직접=중앙값
 
     assert solve_rates({})[0] == {"exalted": 1.0}                  # 관측 없으면 지어내지 않는다
 
@@ -1538,12 +1545,13 @@ def demo():
     assert _g["divine"]["rate"] == 400 and _g["divine"]["how"] == "이전 수집분", _g
     _g2 = guard_rates({"divine": {"rate": 10}}, _mem)          # 17:04 실사고 재현 — 10 은 400 의 1/3 미만
     assert _g2["divine"]["rate"] == 400 and "급변 의심" in _g2["divine"]["how"], _g2
+    assert "obs" not in _g2["divine"], _g2   # 거부 관측은 기억(rate_memory)에 못 들어간다
     _g3 = guard_rates({"divine": {"rate": 350}}, _mem)         # 정상 변동은 관측이 이긴다
     assert _g3["divine"]["rate"] == 350
     _g4 = guard_rates({"divine": {"rate": 900}}, _mem)         # 3배 안쪽 상승은 정상 변동
-    assert _g4["divine"]["rate"] == 900 and _g4["divine"]["obs"] == 900
+    assert _g4["divine"]["rate"] == 900
     _g5 = guard_rates({"annul": {"rate": 5000}}, {"annul": 150.0})   # 00:37 실사고 — 위쪽 독버섯
-    assert _g5["annul"]["rate"] == 150 and _g5["annul"]["obs"] == 5000, _g5
+    assert _g5["annul"]["rate"] == 150 and "관측 5000" in _g5["annul"]["how"], _g5
 
     # rate_memory: 독버섯이 낀 이력에서 중앙값이 진짜 값을 살려내는지 (임시 DB)
     keep_db3 = DB
@@ -1551,12 +1559,12 @@ def demo():
     try:
         now_ms = int(time.time() * 1000)
         with db() as con:
-            for i, r in enumerate(({"divine": {"rate": 300, "obs": 10}},   # 거부됐지만 관측은 10
+            for i, r in enumerate(({"divine": {"rate": 300, "obs": 10}},   # obs 는 이제 무시된다
                                     {"divine": {"rate": 400}},
                                     {"divine": {"rate": 300}})):
                 con.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
                             (now_ms - i * 3600000, "u", json.dumps(r)))
-        assert rate_memory()["divine"] == 300, rate_memory()   # 관측 [10,400,300] 의 중앙값
+        assert rate_memory()["divine"] == 300, rate_memory()   # rate [300,400,300] 의 중앙값 (obs 10 무시)
     finally:
         DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
 
