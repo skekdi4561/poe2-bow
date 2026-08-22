@@ -664,9 +664,12 @@ const harvestRows = d => (isPlainObject(d) && Array.isArray(d.rows))
   ? d.rows.filter(r => r && typeof r === 'object' && typeof r.id === 'string' && r.id)
       .map(r => Object.assign({}, r, { mods: Array.isArray(r.mods) ? r.mods.filter(m => typeof m === 'string') : [] }))
   : [];
-const HARVEST_TTL = 48 * 60 * 60 * 1000;   // 채집 매물은 이틀이면 낡는다 — 호가는 금방 팔리거나 바뀐다
+// 모든 매물은 수집 시각 기준 24시간이 지나면 통계에서 뺀다 — 호가는 금방 팔리거나 바뀐다.
+// 스냅샷·채집·직접 등록 전부 같은 규칙이다 (섞이면 어느 시점 시세인지가 흐려진다).
+const ROW_TTL = 24 * 60 * 60 * 1000;
+const isFresh = (b, cut) => typeof b.t === 'number' && b.t >= cut;
 function loadHarvest(){
-  const cut = Date.now() - HARVEST_TTL;
+  const cut = Date.now() - ROW_TTL;
   const rows = harvestRows(readStore('poe2harvest', null, isPlainObject))
     .filter(r => typeof r.t === 'number' && r.t >= cut);
   if (!rows.length) return 0;
@@ -872,8 +875,20 @@ function partition(){
              offs: offMods(b), dps: d, d: d[metric], p: exPrice(b) };
   });
   const rarityOk = v => !rareOnly || !v.rarity || v.rarity === 'Rare';
+  const cut = Date.now() - ROW_TTL;
+  const ok = v => rarityOk(v) && v.d > 0 && v.p > 0;
+  let base = all.filter(v => ok(v) && isFresh(v.src, cut));
+  let byStale = all.filter(v => ok(v) && !isFresh(v.src, cut)).length;
+  let staleKept = false;
+  if (!base.length && byStale) {
+    // 수집이 멈춰 전부 만료된 상태. 빈 화면은 고장으로 보인다 — 매물은 보여주되
+    // freshness 가 "24시간이 지난 시세" 경고를 크게 띄운다.
+    base = all.filter(ok);
+    byStale = 0;
+    staleKept = true;
+  }
   return {
-    base: all.filter(v => rarityOk(v) && v.d > 0 && v.p > 0),
+    base, byStale, staleKept,
     byRarity: all.filter(v => !rarityOk(v)).length,
     byMetric: all.filter(v => rarityOk(v) && !(v.d > 0 && v.p > 0)).length,
   };
@@ -994,6 +1009,7 @@ function render(){
   $('filtered').textContent = [
     part.byRarity ? `희귀가 아닌 ${part.byRarity}개 제외` : '',
     part.byMetric ? `지금 비교 기준으로는 DPS나 가격이 0인 ${part.byMetric}개 제외` : '',
+    part.byStale ? `수집한 지 24시간이 지난 ${part.byStale}개 제외` : '',
     active && byOption ? `옵션 조건으로 ${byOption}개 제외` : '',
   ].filter(Boolean).join(' · ');
 
@@ -1083,6 +1099,12 @@ function freshness(base){
       + `${dayStr(lo)}~${dayStr(hi)}. 다른 시점의 가격이 한 곡선에 들어가면 `
       + `옛 매물이 최전선으로 잡혀 지금 시세를 반영하지 못합니다.`
       + `<button id="purge-old">최근 것만 남기기</button>`;
+  }
+  if (Date.now() - hi > ROW_TTL) {
+    // 가장 최근 매물조차 24시간을 넘겼다 = 수집이 멈춰 있다. 다른 경고보다 이게 우선이다.
+    el.className = 'freshness warn';
+    el.innerHTML = `<strong>${esc(agoStr(hi))} 시세입니다</strong> — 24시간이 지나 통계 신뢰도가 낮습니다. `
+      + `새 수집분이 올라오면 자동으로 갈아끼워집니다.`;
   }
 }
 
@@ -1428,6 +1450,13 @@ $('trade-go').addEventListener('click', async () => {
     if (meetsAll(null, prd)) throw new Error('offs 없음');
     if (condText({ label: '민첩 #', min: 31 }) !== '민첩 31 이상') throw new Error('condText 빈칸 채움');
     if (condText({ label: '치명타 확률 +2% 이상', min: 2 }) !== '치명타 확률 +2% 이상') throw new Error('condText 그대로');
+
+    // 24시간 만료: 시각이 없거나(구버전 저장분) 지난 매물은 신선하지 않다
+    const nowT = Date.now(), cutT = nowT - ROW_TTL;
+    if (!isFresh({ t: nowT }, cutT)) throw new Error('방금 매물이 만료됨');
+    if (!isFresh({ t: nowT - ROW_TTL + 60000 }, cutT)) throw new Error('23시간 59분은 신선해야 함');
+    if (isFresh({ t: nowT - ROW_TTL - 60000 }, cutT)) throw new Error('24시간 1분이 통과됨');
+    if (isFresh({}, cutT) || isFresh({ t: '어제' }, cutT)) throw new Error('시각 불명이 통과됨');
     snapConds = kSnap;
 
     // 채집기가 건네준 저장값 — 모양이 어떻든 배열을 돌려주고 절대 던지지 않는다
