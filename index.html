@@ -1,0 +1,1410 @@
+<meta charset="utf-8">
+<title>활 시세 감정소</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Spectral:wght@500;600&display=swap">
+
+<style>
+/* 다크 전용이다. 테마 전환을 두지 않는다 — 뷰어의 밝은 테마 설정에 끌려가지 않게
+   하려면 [data-theme] 분기 자체가 없어야 한다. 색은 전부 여기서 명시적으로 칠한다.
+   밝은 배경을 뒤집은 게 아니라, 어두운 화면을 전제로 다시 잡은 값들이다:
+   면과 면 사이는 그림자 대신 테두리로 가르고(어두운 배경에선 그림자가 거의 안 읽힌다),
+   금색 강조는 어두운 바탕에서 탁해지지 않게 채도를 조금 올렸다. */
+:root{
+  --bg:#0d1117;          /* 바탕 — 순검정은 눈이 아프고 대비가 과해진다 */
+  --surface:#151b23;     /* 카드 */
+  --surface-2:#1d2530;   /* 입력칸·칩 */
+  --line:#2c3644;        /* 어두운 화면에선 테두리가 더 또렷해야 면이 갈린다 */
+  --ink:#e8ecf1;
+  --ink-2:#98a5b3;
+  --ink-3:#6a7684;
+  --accent:#e0aa4e;      /* 금색 — 어두운 바탕에서 탁해지지 않을 만큼만 밝게 */
+  --accent-soft:#3b2f19;
+  --on-accent:#12100b;
+  --base-line:#6a7684;
+  --bad:#d2685a;
+  --shadow:0 1px 0 rgba(255,255,255,.03), 0 12px 32px -20px #000;
+  /* 셀렉트 목록·스크롤바·슬라이더 같은 브라우저 기본 위젯까지 어둡게 —
+     이게 없으면 드롭다운만 흰 창으로 튀어나온다 */
+  color-scheme: dark;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:"IBM Plex Sans","IBM Plex Sans KR",-apple-system,"Malgun Gothic",sans-serif;
+  font-size:15px; line-height:1.55;
+}
+.num{font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums}
+.wrap{max-width:1240px; margin:0 auto; padding:28px 20px 72px}
+
+header{margin-bottom:18px}
+h1{
+  font-family:Spectral,"Gowun Batang",Georgia,serif; font-weight:700; font-size:29px;
+  margin:0 0 4px; letter-spacing:-.01em; text-wrap:balance;
+}
+h1 .mark{color:var(--accent)}
+header p{margin:0; color:var(--ink-2); max-width:70ch; font-size:14px}
+
+.card{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:18px; box-shadow:var(--shadow); margin-bottom:20px;
+}
+h2{font-family:Spectral,"Gowun Batang",Georgia,serif; font-size:17px; font-weight:700; margin:0 0 4px}
+.hint{color:var(--ink-3); font-size:12.5px; margin:0 0 14px}
+.hint:last-child{margin-bottom:0}
+
+label{display:block; font-size:11px; text-transform:uppercase; letter-spacing:.09em;
+  color:var(--ink-2); margin-bottom:5px; font-weight:500}
+textarea,input,select{
+  width:100%; background:var(--surface-2); color:var(--ink);
+  border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+  font:inherit; font-size:14px;
+}
+textarea{min-height:120px; resize:vertical; font-family:"IBM Plex Mono",monospace; font-size:12.5px; line-height:1.45}
+input:focus,textarea:focus,select:focus,[type=range]:focus{outline:2px solid var(--accent); outline-offset:1px}
+.row{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:12px}
+.row.two{grid-template-columns:1fr 1fr}
+.row.three{grid-template-columns:1fr 1fr 1fr}
+
+button{
+  font:inherit; font-weight:600; cursor:pointer; border-radius:6px;
+  border:1px solid var(--line); background:var(--surface-2); color:var(--ink);
+  padding:9px 14px; white-space:nowrap;
+}
+button:hover{border-color:var(--accent)}
+button:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+button.primary{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
+button:disabled{cursor:not-allowed; opacity:.75}
+.actions{display:flex; gap:8px; margin-top:14px; flex-wrap:wrap}
+
+/* ---- 상단 얇은 조회 바 ---- */
+.loadbar{display:grid; grid-template-columns:minmax(0,1fr) 92px 108px auto; gap:10px; align-items:end}
+@media (max-width:760px){.loadbar{grid-template-columns:1fr}}
+
+/* ---- 주인공: 가격 곡선 ---- */
+.hero{display:grid; grid-template-columns:290px minmax(0,1fr); gap:24px; align-items:start}
+@media (max-width:900px){.hero{grid-template-columns:1fr}}
+.filters{display:flex; flex-direction:column; gap:3px}
+.filt-head{display:flex; justify-content:space-between; align-items:baseline; gap:10px}
+.filt-head .count{font-size:12px; color:var(--ink-2); white-space:nowrap}
+.slider{display:block}
+.slider .top{display:flex; justify-content:space-between; align-items:baseline; gap:8px; margin-bottom:3px}
+.slider .txt{font-size:12.5px; color:var(--ink); line-height:1.35}
+.slider .val{font-size:12px; font-weight:600; color:var(--accent); white-space:nowrap}
+.slider .val.off{color:var(--ink-3); font-weight:400}
+[type=range]{width:100%; padding:0; height:18px; background:none; border:0; accent-color:var(--accent); cursor:pointer}
+.premium{
+  margin:0 0 14px; padding:12px 14px; border-radius:7px; font-size:14.5px;
+  background:var(--accent-soft); border:1px solid var(--accent); color:var(--ink);
+}
+.premium.none{background:var(--surface-2); border-color:var(--line); color:var(--ink-2)}
+.legend{display:flex; gap:16px; margin-top:10px; font-size:12px; color:var(--ink-2); flex-wrap:wrap}
+.legend i{display:inline-block; width:16px; height:0; border-top-width:2px; margin-right:6px; vertical-align:middle}
+.legend .sel{border-top:2px solid var(--accent)}
+.legend .base{border-top:2px dashed var(--base-line)}
+.axistoggle{display:inline-flex; gap:6px; align-items:center; cursor:pointer; margin:8px 0 0;
+  font-size:12px; color:var(--ink-2); text-transform:none; letter-spacing:0; font-weight:400}
+.axistoggle input{width:auto; margin:0; accent-color:var(--accent)}
+.updated{
+  display:none; margin:12px 0 0; font-size:13px; color:var(--ink-2);
+  border-left:3px solid var(--accent); padding:2px 0 2px 10px;
+}
+.updated strong{color:var(--ink); font-weight:600}
+.freshness{margin:10px 0 0; font-size:12.5px; color:var(--ink-3)}
+.freshness.warn{
+  color:var(--ink); background:var(--surface-2); border:1px solid var(--bad);
+  border-left-width:4px; border-radius:6px; padding:10px 12px;
+}
+.freshness button{padding:5px 10px; font-size:12px; margin-left:8px}
+
+/* ---- 표 ---- */
+.tablewrap{overflow-x:auto; margin-top:10px}
+table{width:100%; border-collapse:collapse; font-size:13.5px; min-width:820px}
+th{
+  text-align:right; font-size:10.5px; text-transform:uppercase; letter-spacing:.08em;
+  color:var(--ink-2); font-weight:600; padding:0 10px 8px; border-bottom:1px solid var(--line);
+}
+th:first-child,td:first-child{text-align:left}
+td{padding:9px 10px; border-bottom:1px solid var(--line); text-align:right}
+tr.front td{background:var(--accent-soft)}
+tr:hover td{background:var(--surface-2)}
+tr.front:hover td{background:var(--accent-soft)}
+.name{font-weight:600}
+.sub{display:block; color:var(--ink-3); font-size:11.5px; font-weight:400}
+.pill{display:inline-block; padding:1px 7px; border-radius:99px; font-size:10.5px;
+  font-weight:600; letter-spacing:.04em; border:1px solid currentColor}
+.pill.best{color:var(--accent)}
+.pill.over{color:var(--bad)}
+.pill.note{color:var(--ink-2); font-weight:500}
+.pills{display:flex; gap:4px; flex-wrap:wrap; justify-content:flex-end}
+.del{border:0; background:none; color:var(--ink-3); padding:2px 6px; font-size:16px; line-height:1}
+.del:hover{color:var(--bad)}
+
+/* ---- 사다리 ---- */
+.ladder{list-style:none; padding:0; margin:10px 0 0; display:flex; flex-direction:column; gap:8px}
+.ladder li{
+  display:flex; justify-content:space-between; gap:14px; align-items:baseline;
+  padding:10px 12px; border:1px solid var(--line); border-radius:7px; background:var(--surface-2);
+}
+.ladder li.knee{border-color:var(--accent); background:var(--accent-soft)}
+.ladder .step{font-size:13px}
+.ladder .cost{font-weight:600; white-space:nowrap}
+.ladder .cost small{display:block; font-weight:400; color:var(--ink-3); font-size:11px; text-align:right}
+
+.check{display:flex; gap:8px; align-items:center; margin-top:14px; cursor:pointer;
+  font-size:13px; color:var(--ink); text-transform:none; letter-spacing:0; font-weight:400}
+.check input{width:auto; margin:0; accent-color:var(--accent)}
+.condrow{
+  display:flex; gap:9px; align-items:flex-start; cursor:pointer; padding:7px 9px;
+  border:1px solid transparent; border-radius:6px; font-size:12.5px; color:var(--ink-2);
+  text-transform:none; letter-spacing:0; font-weight:400; margin:0; line-height:1.4;
+}
+.condrow:hover{background:var(--surface-2)}
+.condrow.on{border-color:var(--accent); background:var(--accent-soft); color:var(--ink)}
+.condrow input{width:auto; margin:2px 0 0; accent-color:var(--accent); flex:none}
+.condrow span{flex:1}
+.condrow em{
+  flex:none; font-style:normal; font-size:10.5px; color:var(--ink-3);
+  border:1px solid var(--line); border-radius:99px; padding:0 6px; white-space:nowrap;
+}
+.condrow.on em{border-color:var(--accent); color:var(--accent)}
+.condrow.local em{opacity:.85}
+.budgetbar{display:flex; gap:14px; align-items:center; margin:0 0 16px}
+.budgetbar input{flex:1}
+.budgetbar b{font-size:17px; color:var(--accent); white-space:nowrap; min-width:8ch; text-align:right}
+.oplist{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:2px}
+.oplist li{display:grid; grid-template-columns:minmax(0,15rem) minmax(0,1fr) 5.5rem 5rem;
+  gap:12px; align-items:center; padding:7px 10px; border-radius:6px; font-size:13px}
+.oplist li:hover{background:var(--surface-2)}
+.oplist li.baserow{border:1px dashed var(--line)}
+.oplist .nm{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.oplist .nm em{font-style:normal; font-size:10.5px; color:var(--ink-3); margin-left:6px}
+.oplist .track{height:8px; background:var(--surface-2); border-radius:99px; overflow:hidden}
+.oplist .fill{height:100%; background:var(--accent); border-radius:99px}
+.oplist li.baserow .fill{background:var(--base-line)}
+.oplist .dps{text-align:right; font-weight:600}
+.oplist .gap{text-align:right; color:var(--ink-3); font-size:12px}
+.oplist .gap.bad{color:var(--bad)}
+.oplist .none{color:var(--ink-3); font-size:12px; grid-column:2 / -1}
+@media (max-width:760px){.oplist li{grid-template-columns:minmax(0,1fr) 5rem 4.5rem}
+  .oplist .track{display:none}}
+.condbar{padding:2px 9px 10px 30px}
+.condbar .top{display:flex; justify-content:space-between; align-items:baseline;
+  font-size:11px; color:var(--ink-3); margin-bottom:2px}
+.condbar b{color:var(--accent); font-weight:600}
+label .src{float:right; text-transform:none; letter-spacing:0; color:var(--ink-3); font-weight:400}
+.empty{color:var(--ink-3); padding:26px 4px; text-align:center; font-size:14px}
+
+details.card > summary{
+  cursor:pointer; font-family:Spectral,"Gowun Batang",Georgia,serif;
+  font-size:17px; font-weight:700; list-style:none;
+}
+details.card > summary::-webkit-details-marker{display:none}
+details.card > summary::before{content:'▸ '; color:var(--accent)}
+details.card[open] > summary::before{content:'▾ '}
+details.card > summary:focus-visible{outline:2px solid var(--accent); outline-offset:3px}
+.minor{display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start}
+@media (max-width:760px){.minor{grid-template-columns:1fr}}
+.minor > details{margin-bottom:0}
+
+svg{display:block; width:100%; height:auto}
+.axis{stroke:var(--line)}
+.gridline{stroke:var(--line); stroke-dasharray:2 4; opacity:.7}
+.tick{fill:var(--ink-3); font-size:11px; font-family:"IBM Plex Mono",monospace}
+.dot{fill:var(--ink-2)}
+.dot.front{fill:var(--accent)}
+.frontline{fill:none; stroke:var(--accent); stroke-width:2}
+.baseline{fill:none; stroke:var(--base-line); stroke-width:1.6; stroke-dasharray:5 4}
+#fail{display:none; background:var(--bad); color:#fff; padding:10px 14px; border-radius:6px; margin-bottom:18px}
+footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid var(--line); padding-top:14px}
+</style>
+
+<div class="wrap">
+<div id="fail">계산 자체 검증 실패 — 결과를 믿지 마세요.</div>
+
+<header>
+  <h1>활 <span class="mark">시세 감정소</span></h1>
+  <p>원하는 옵션을 조건으로 걸고, 그 조건이 가격 곡선을 얼마나 밀어올리는지 봅니다. 조건 하나에 값이 두 배로 뛴다면 그 옵션은 포기하는 게 가성비입니다.</p>
+  <p class="updated" id="updated"></p>
+</header>
+
+<div class="card">
+  <div class="loadbar">
+    <div>
+      <label for="trade-url">거래소 검색 URL</label>
+      <input id="trade-url" placeholder="https://poe.kakaogames.com/trade2/search/poe2/...">
+    </div>
+    <div><label for="trade-limit">개수</label><input id="trade-limit" class="num" inputmode="numeric" value="20"></div>
+    <div><label for="trade-mode">기존 목록</label><select id="trade-mode"><option value="replace">교체</option><option value="append">추가</option></select></div>
+    <div><button class="primary" id="trade-go">불러오기</button></div>
+  </div>
+  <p class="hint" id="trade-status" style="margin-top:10px"></p>
+  <p class="hint">따로 불러오지 않아도, <a href="poe2-bow-harvester.user.js">채집기(유저스크립트)</a>를
+    설치하면 거래소에서 구경한 활 매물이 자동으로 여기 합쳐집니다 — 추가 요청 0.</p>
+</div>
+
+<div class="card" id="budget-card">
+  <h2>예산으로 살 수 있는 것</h2>
+  <p class="hint">예산을 정하면, 각 옵션을 고집할 때 DPS를 얼마나 포기하는지 나옵니다.
+    위쪽은 값이 거의 안 붙으니 챙기고, 아래쪽은 그 DPS를 내고 살 만한지 따져보세요.</p>
+  <div class="budgetbar">
+    <input type="range" id="budget" min="0" max="1000" value="500"
+           aria-label="예산" aria-describedby="budget-val">
+    <b id="budget-val">—</b>
+  </div>
+  <ul class="oplist" id="oplist"></ul>
+</div>
+
+<div class="card">
+  <div class="hero">
+    <div>
+      <div class="filt-head">
+        <h2>DPS 밖 옵션</h2>
+        <span class="count" id="match-count"></span>
+      </div>
+      <p class="hint" id="filters-hint">치명타·스킬 레벨처럼 거래소 DPS에 안 들어가는 옵션들입니다. 조건을 고르면 그 옵션만의 가격 곡선이 기준 곡선과 겹쳐 그려집니다.</p>
+      <div class="filters" id="filters"></div>
+    </div>
+    <div>
+      <p class="premium none" id="premium">조건을 걸면 그 옵션에 얼마를 더 내야 하는지 여기 나옵니다.</p>
+      <div id="chart"></div>
+      <div class="legend" id="legend"></div>
+      <label class="axistoggle"><input type="checkbox" id="logy" checked> 세로축 로그</label>
+      <p class="freshness" id="freshness"></p>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>DPS 10당 가격</h2>
+  <p class="hint">최전선에서 한 계단 올라갈 때, DPS 10을 더 얻는 데 붙는 값. 가장 싼 계단에 표시가 붙습니다.</p>
+  <ul class="ladder" id="ladder"></ul>
+</div>
+
+<div class="card">
+  <h2>매물</h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th>활</th><th>물리</th><th>원소</th><th id="th-dps">총 DPS</th>
+        <th>DPS 밖 옵션</th><th id="th-price">가격</th><th>DPS 10당</th><th>판정</th><th></th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="hint" id="filtered"></p>
+  <div class="empty" id="empty">아직 등록된 활이 없습니다.</div>
+  <div class="actions"><button id="demo">예시 데이터 넣기</button><button id="wipe">전부 지우기</button></div>
+</div>
+
+<div class="minor">
+  <details class="card">
+    <summary>직접 등록</summary>
+    <p class="hint" style="margin-top:12px">게임에서 활에 커서를 올리고 Ctrl+C → 아래에 붙여넣기. 한국어·영문 클라이언트 둘 다 읽습니다.</p>
+    <label for="paste">아이템 텍스트</label>
+    <textarea id="paste" placeholder="아이템 종류: 활&#10;희귀도: 희귀&#10;파멸의 노래&#10;고급 광신도 활&#10;--------&#10;물리 피해: 52-97 (증가됨)&#10;원소 피해: 18-33 (증가됨)&#10;치명타 명중 확률: 6.50%&#10;초당 공격 횟수: 1.42 (증가됨)&#10;--------&#10;치명타 명중 확률 38% 증가"></textarea>
+    <div class="row two">
+      <div><label for="f-name">이름</label><input id="f-name" placeholder="활 이름"></div>
+      <div><label for="f-aps">초당 공격</label><input id="f-aps" class="num" inputmode="decimal" placeholder="1.42"></div>
+    </div>
+    <div class="row">
+      <div><label for="f-pmin">물리 min</label><input id="f-pmin" class="num" inputmode="decimal" placeholder="52"></div>
+      <div><label for="f-pmax">물리 max</label><input id="f-pmax" class="num" inputmode="decimal" placeholder="97"></div>
+      <div><label for="f-emin">원소 min</label><input id="f-emin" class="num" inputmode="decimal" placeholder="18"></div>
+      <div><label for="f-emax">원소 max</label><input id="f-emax" class="num" inputmode="decimal" placeholder="33"></div>
+    </div>
+    <div class="row three">
+      <div><label for="f-price">가격</label><input id="f-price" class="num" inputmode="decimal" placeholder="12"></div>
+      <div><label for="f-cur">화폐</label><select id="f-cur">
+        <option value="exalted">엑잘티드</option><option value="divine">디바인</option>
+        <option value="chaos">카오스</option><option value="annul">소멸</option></select></div>
+      <div><label for="f-crit">치명타 %</label><input id="f-crit" class="num" inputmode="decimal" placeholder="6.50"></div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="add">목록에 추가</button>
+      <button id="clearform">칸 비우기</button>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>기준 설정</summary>
+    <p class="hint" style="margin-top:12px">빌드에 따라 무엇이 DPS인지 다릅니다 — 물리 스케일링이면 물리 DPS로 보세요.
+      총 DPS는 <strong>물리 + 원소</strong>입니다. 카오스는 활 빌드가 안 쓰므로 세지 않습니다.</p>
+    <div class="row two">
+      <div>
+        <label for="metric">비교 기준</label>
+        <select id="metric">
+          <option value="total">총 DPS</option>
+          <option value="phys">물리 DPS</option>
+          <option value="ele">원소 DPS</option>
+        </select>
+      </div>
+      <div>
+        <label for="unit">표시 화폐 <span class="src" id="unit-note"></span></label>
+        <select id="unit">
+          <option value="auto">자동 (숫자가 작게 나오는 쪽)</option>
+          <option value="exalted">엑잘티드</option>
+          <option value="divine">디바인</option>
+          <option value="chaos">카오스</option>
+          <option value="annul">소멸</option>
+        </select>
+      </div>
+    </div>
+    <p class="hint" style="margin:16px 0 6px">화폐 환율 (엑잘 기준). 매물은 <strong>엑잘·카오스·디바인·소멸</strong>
+      넷으로만 받고 전부 엑잘로 환산합니다. 값은 수집기가 거래소 대량 교환에서 직접 떠오며,
+      칸 옆에 근거(직접 매물 수 / 우회 추정)가 붙습니다. 직접 넣으면 그 값이 우선입니다.</p>
+    <div class="row two" id="rate-rows"></div>
+    <label class="check"><input type="checkbox" id="crit-on">
+      치명타 반영 — 거래소 DPS는 치명타를 빼고 계산합니다</label>
+    <div class="row two" id="crit-row">
+      <div><label for="crit-bonus">치명타 피해 보너스 %</label><input id="crit-bonus" class="num" inputmode="decimal" value="100"></div>
+    </div>
+    <label class="check"><input type="checkbox" id="rare-only" checked>
+      희귀 등급만 — 고유는 옵션이 고정이라 가격이 빌드 수요로 정해집니다</label>
+  </details>
+</div>
+
+<footer>
+  DPS는 거래소 표기와 같은 방식(평균 피해 × 초당 공격)으로 계산합니다. 치명타·스킬 레벨·정확도는 그 식에 안 들어가므로 조건 슬라이더로 따로 겁니다. 서포트 젬·패시브·화살통 같은 캐릭터 쪽 배율은 활마다 같으므로 순위를 바꾸지 않습니다. 정확한 최종 딜은 PoB2로 확인하세요.
+</footer>
+</div>
+
+<script>
+/* ---------- 계산 ---------- */
+function dpsOf(b){
+  // 거래소에서 온 매물은 GGG가 이미 pdps/edps 를 계산해준다 — 다시 안 구한다.
+  // 카오스는 아예 안 센다: 활 빌드가 카오스 피해를 쓰지 않는다.
+  const p = b.pdps !== undefined ? (b.pdps || 0) : (b.pmin + b.pmax) / 2 * b.aps;
+  const e = b.pdps !== undefined ? (b.edps || 0) : (b.emin + b.emax) / 2 * b.aps;
+  return { phys: p, ele: e, total: p + e };
+}
+// 거래소는 화폐를 이름 그대로 준다(transmute/aug/exalted/divine...). 전부 엑잘 기준으로 환산한다.
+// 기본값은 추정치 — 실제 시세는 사용자가 채운다. 모르는 화폐는 0 으로 두고 제외한다.
+// 실거래 화폐는 넷뿐이다. 나머지 가격의 매물은 수집기가 아예 안 담는다 —
+// 하급 화폐는 교환 매물이 거의 없어 환율을 못 믿고, 섞으면 세로 축척이 틀어진다.
+// 아래는 스냅샷이 없을 때(직접 등록만 쓸 때)의 출발값일 뿐, 실제 값은 수집기가 채운다.
+const TRADE_CURRENCIES = ['exalted', 'chaos', 'divine', 'annul'];
+const RATE_DEFAULT = { exalted: 1, chaos: 65, divine: 300, annul: 279 };
+let rates = {};          // 사용자가 직접 고친 값 (항상 최우선)
+let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 값 { cur: {rate, n, lo, hi} }
+// 수집기가 "그 옵션을 검색 조건으로 걸어" 직접 재온 곡선들.
+// 검색이 id 를 100개까지만 주는데 그게 가격 오름차순이라, 비싼 옵션이 붙은 활은
+// 기본 표본에 아예 안 들어온다 — 로컬 필터로는 이 값을 만들 수 없다.
+let snapConds = [];      // [{id, label, min, why}]
+let pickedCond = null;   // 지금 보고 있는 조건 라벨 (null = 조건 없음)
+let budgetPos = null;    // 예산 슬라이더 위치 (0~1000, null = 아직 안 건드림)
+let logYAxis = true;     // 세로축 로그 여부 — DOM 이 아니라 여기서 들고 있는다
+let localMin = 0;        // 로컬 분류 조건의 최소값 (측정 조건은 검색할 때 값이 정해져 못 바꾼다)
+// 저장값은 파싱만 되면 끝이 아니라 "모양"까지 봐야 한다. try/catch 는 JSON 오류만 잡아서,
+// 'poe2bows' 가 "123" 이면 bows 가 숫자가 되고 bows.map 에서 부팅 중 페이지가 통째로 죽는다
+// (실측: TypeError: bows.map is not a function — 표·차트·예산표 전부 빈 채로 영구 고착).
+function readStore(key, fallback, ok){
+  try {
+    const v = JSON.parse(localStorage.getItem(key) || 'null');
+    return ok(v) ? v : fallback;
+  } catch (e) { return fallback; }
+}
+const isPlainObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
+
+rates = readStore('poe2rates', {}, isPlainObject);
+// 엑잘이 이 넷 중 가장 작은 단위라, 1 보다 싼 환율은 시세가 아니라 계산이 깨진 것이다.
+// 수집기의 우회(삼각) 계산이 관측 불일치로 0 까지 깎이는 경우가 실제로 있었는데, 그 값이
+// 그대로 오면 그 화폐 매물의 가격이 0 이 되어 "DPS 501 활 0.0000 ex" 가 최전선 맨 앞에
+// 뜬다(브라우저에서 재현). 수집기 쪽도 막았지만 옛 스냅샷이 남아 있을 수 있어 여기서도 건다.
+const okRate = v => typeof v === 'number' && isFinite(v) && v >= 1;
+function rateOf(cur){
+  if (cur in rates) return rates[cur];                  // 손으로 넣은 값이 이긴다
+  const s = snapRates[cur];
+  if (s && okRate(s.rate)) return s.rate;               // 그다음이 실제 거래소 시세
+  return cur in RATE_DEFAULT ? RATE_DEFAULT[cur] : 0;   // 모르는 화폐는 0 → 환산 불가
+}
+// 근거를 밝힌다. 카카오 서버는 교환 시장이 얇고(엑잘↔디바인 3건) 사기 매물이 과반이라
+// 자동값을 그대로 믿으면 안 된다 — 직접 매물인지 우회 추정인지가 판단 근거가 된다.
+function rateNote(cur){
+  if (cur in rates) return '직접 입력';
+  const r = snapRates[cur];
+  if (!r || !okRate(r.rate)) return cur in RATE_DEFAULT ? '기본값' : '환산 불가';
+  if (r.how === '기준') return '기준 화폐';
+  const spread = r.hi > r.lo ? ` · ${fmt(r.lo, 0)}~${fmt(r.hi, 0)}` : '';
+  return `${r.how || '거래소'}${r.direct ? ` ${r.direct}건` : ''}${spread}`;
+}
+function exPrice(b){ return b.price * rateOf(b.cur); }
+
+// 계산은 늘 엑잘 기준으로 하고, 보여줄 때만 고른 화폐로 나눈다.
+// POE2 는 엑잘 가치가 잘 떨어져서 엑잘로만 보면 숫자가 금방 다섯 자리가 된다.
+const UNIT_LABEL = { exalted: 'ex', chaos: 'chaos', divine: 'div', annul: 'annul' };
+let unit = 'auto';
+try {
+  const u = localStorage.getItem('poe2unit');
+  if (u === 'auto' || (u && u in UNIT_LABEL)) unit = u;   // 모르는 값이면 자동으로 되돌린다
+} catch (e) {}
+let unitAuto = 'exalted';                 // 자동일 때 실제로 고른 화폐
+
+function pickUnit(minEx){
+  // 큰 단위부터 훑되, "제일 싼 매물이 0.1 밑으로 내려가지 않는" 선에서 멈춘다.
+  // 최댓값 기준으로 고르면 1 ex 짜리가 0.0033 div 가 되어 값이 통째로 사라진다 —
+  // 큰 숫자가 불편한 것보다 작은 값이 0 으로 뭉개지는 쪽이 훨씬 나쁘다.
+  for (const c of ['divine', 'annul', 'chaos', 'exalted']) {
+    const r = rateOf(c);
+    // 환율이 1 이하로 잡힌 화폐(표본이 얇아 엑잘과 같아진 경우)는 단위로 쓸 이유가 없다
+    if (r > 1 && minEx / r >= 0.1) return c;
+  }
+  return 'exalted';
+}
+function activeUnit(){ return unit === 'auto' ? unitAuto : unit; }
+function toUnit(vEx){ const r = rateOf(activeUnit()) || 1; return vEx / r; }
+// 자릿수 규칙은 한 곳에서만 정한다. 축 눈금이 따로 정하고 있었는데 소수 둘에서 멈춰서,
+// 디바인처럼 큰 단위를 고르면 로그축 맨 아래 눈금(1 ex = 0.0025 div)이 "0.00" 으로 찍혔다 —
+// 로그축엔 0 이 있을 수 없으니 없는 값을 가리키는 눈금이었다.
+const decimalsFor = v => { const a = Math.abs(v);
+  return a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : a >= 0.1 ? 3 : 4; };
+function money(vEx){
+  const v = toUnit(vEx);
+  if (!isFinite(v)) return '—';
+  return fmt(v, decimalsFor(v)) + ' ' + (UNIT_LABEL[activeUnit()] || activeUnit());
+}
+
+// 파레토 최전선: 자기보다 DPS가 높거나 같으면서 더 싼 활이 없는 것들
+// ponytail: O(n²) 전수 비교. 실측 — 100개 16ms, 500개 74ms, 2000개 288ms(드래그가 끊김), 5000개 721ms.
+// 스냅샷 기본이 100개라 지금은 남는다. 500개를 넘길 일이 생기면 DPS 내림차순 정렬 후
+// 최저가를 들고 한 번만 훑는 O(n log n) 방식으로 바꿀 것(동점 매물 처리만 주의).
+function frontier(list){
+  return list.filter(a => !list.some(o => o !== a && o.d >= a.d && o.p <= a.p && (o.d > a.d || o.p < a.p)))
+             .sort((x, y) => x.d - y.d);
+}
+
+// 예산으로 살 수 있는 최대 DPS. 사는 사람의 질문은 "이 DPS가 얼마냐"가 아니라
+// "내 돈으로 어디까지 가냐"라서, 최전선을 거꾸로 읽는다.
+//
+// 보간하지 않는다. 두 매물 사이를 직선으로 이으면 실제로 없는 DPS 를 지어내고,
+// 점이 성긴 조건 곡선일수록 크게 부풀어 "부분집합이 전체보다 좋다"는 모순이 나온다
+// (실측: 정확도 조건 518 DPS > 조건 없음 505 DPS). 실제로 살 수 있는 매물의 DPS 만 답한다.
+function dpsAt(front, budget){
+  let best = null;
+  for (const x of front) if (x.p <= budget && (best === null || x.d > best)) best = x.d;
+  return best;
+}
+
+// 최전선에 (DPS, 가격)이 완전히 같은 점이 여러 개 남을 수 있다 — 값이 같은 매물이 흔해서
+// 서로를 밀어내지 못하기 때문이다(실측: 치명타 피해 +30% 조건은 4점 중 3점이 중복 = 실제로 점 하나).
+// 표에서는 동점 매물 전부에 "최전선" 딱지가 붙어야 맞으므로 frontier() 는 그대로 두고,
+// "곡선이라 부를 만한가"를 따질 때만 서로 다른 점의 개수를 센다.
+const distinctPts = f => new Set(f.map(x => x.d + '@' + x.p)).size;
+
+// 최전선을 따라 선형 보간해서 "이 DPS면 원래 얼마인가"를 구한다
+function priceAt(front, d){
+  if (!front.length) return null;
+  if (d <= front[0].d) return front[0].p;
+  for (let i = 1; i < front.length; i++) {
+    if (d <= front[i].d) {
+      const a = front[i - 1], b = front[i];
+      return a.p + (d - a.d) / ((b.d - a.d) || 1) * (b.p - a.p);
+    }
+  }
+  return null;                              // 기준 곡선 범위 밖이면 비교할 수 없다
+}
+
+/* ---------- 옵션 분류 ---------- */
+// 거래소 DPS = 평균 피해 x 초당 공격. 그 식에 들어가는 옵션은 아래가 전부다.
+// 나머지를 전부 "DPS 밖"으로 치는 쪽이, 세상의 모든 옵션을 나열하려다 빠뜨리는 것보다 안전하다.
+// GGG 가 준 pdps/edps 에 이미 들어 있는 옵션. 한국어는 반드시 줄 맨 앞에 붙여 잡는다 —
+// `공격 속도.*증가` 로 느슨하게 두면 "반려수의 공격 속도 14% 증가"(동료 펫 옵션, 무기 DPS 와
+// 무관)까지 삼켜 조건 목록에서 통째로 사라진다. 실측 473개 중 241개가 이 옵션을 갖고 있었고,
+// 무기 공속만으로 베이스 aps 를 역산하면 217개가 정확히 맞아떨어져 무관함이 확인됐다.
+// `피해.*추가` 도 "피해의 #%를 추가 카오스 피해로 획득"을 잘못 잡으므로 범위 표기를 요구한다.
+const COUNTED = [
+  /increased Physical Damage|^물리 피해 [\d.]+% 증가/i,
+  /Adds \d|피해 \d+~\d+ 추가/i,
+  /increased Attack Speed|^공격 속도 [\d.]+% 증가/i,
+];
+// 반드시 마크업을 벗긴 뒤 판별한다 — "[Physical|물리] 피해"는 "물리 피해"와 글자가 안 붙어 있다
+const isOffDps = m => !COUNTED.some(re => re.test(cleanMod(m)));
+// 곡선을 뜰 가치가 없는 옵션 — 수집기(serve.py)와 같은 기준으로 거른다.
+// 룬·베이스 고유 옵션은 "얼마를 더 내는가"의 답이 못 된다.
+// 수집기(serve.py)의 JUNK_PREFIX/WORDS/KEYS 와 같은 기준. 능력치는 착용 요구치용이라 뺀다.
+const JUNK_MOD = /^결속됨|시야 반경|Light Radius|투사체 사거리|능력치 요구사항/;
+const JUNK_EXACT = new Set(['민첩 #', '힘 #', '지능 #', '모든 능력치 #']);
+
+// 한국 거래소는 옵션을 "[Physical|물리] 피해 #% 증가" 처럼 이중 언어 마크업으로 준다.
+// 읽는 사람에게는 한국어만 필요하다.
+const cleanMod = m => String(m).replace(/\[([^\]|]*)\|([^\]]*)\]/g, '$2').replace(/\[([^\]]*)\]/g, '$1');
+
+// "38% increased Critical Hit Chance" 와 "25% ..." 는 같은 옵션이다.
+// 숫자를 #으로 지워 같은 열쇠로 묶고, 숫자 자체는 문턱값 비교에 쓴다.
+// 수집기(serve.py)의 mod_key 와 글자 하나까지 같아야 한다 — 카탈로그가 부호를 안 쓰므로
+// "민첩 +29" 는 "민첩 #" 이 된다. 어긋나면 잡옵션 제외도, 측정/표본 중복 제거도 빗나간다.
+const modKey = m => cleanMod(m).replace(/[\d.]+/g, '#').replace(/\+\s*#/g, '#')
+  .replace(/\s+/g, ' ').trim();
+const modVal = m => { const n = m.match(/[\d.]+/); return n ? +n[0] : 0; };
+
+// 측정 조건의 옵션 열쇠. 수집기가 key 를 같이 주면 그걸 쓰고, 없으면 라벨에서 만든다.
+// 옛 수집본에는 key 가 없다(실측: latest.json 의 conds 10개 전부 없음) — 그때 라벨을 그대로
+// 열쇠로 쓰면 "치명타 확률 +2% 이상" 과 "치명타 확률 #%" 가 다른 옵션이 되어, 같은 옵션이
+// "측정" 과 "표본" 두 줄로 나란히 나온다(실측: 조건 목록에 중복 4쌍).
+// 라벨은 "<문구> <값> 이상" 꼴이라 뒤의 "이상"만 떼면 일반 옵션 문구와 같아진다.
+const condKey = c => c.key || modKey(String(c.label).replace(/\s*이상\s*$/, ''));
+
+function offMods(b){                        // { 열쇠: 그 활이 가진 값 }
+  const out = {};
+  for (const m of b.mods || []) {
+    if (!isOffDps(m) || JUNK_MOD.test(cleanMod(m))) continue;
+    if (JUNK_EXACT.has(modKey(m))) continue;
+    const k = modKey(m), v = modVal(m);
+    if (!(k in out) || v > out[k]) out[k] = v;
+  }
+  return out;
+}
+
+/* ---------- 파싱 ---------- */
+const RE_PHYS = /(?:Physical Damage|물리 피해)\s*:\s*([\d.]+)\s*[-~]\s*([\d.]+)/i;
+const RE_ELE  = /(?:Elemental|Fire|Cold|Lightning) Damage\s*:\s*(.+)/gi;
+const RE_ELE_KR = /(?:원소|화염|냉기|번개) 피해\s*:\s*(.+)/g;
+const RE_CRIT = /(?:Critical (?:Hit |Strike )?Chance|치명타 (?:명중 )?확률)\s*:\s*([\d.]+)/i;
+const RE_APS  = /(?:Attacks per Second|초당 공격 횟수|공격 속도)\s*:\s*([\d.]+)/i;
+
+function parseItem(text){
+  const out = {};
+  const p = text.match(RE_PHYS);
+  if (p) { out.pmin = +p[1]; out.pmax = +p[2]; }
+
+  // 카오스는 안 읽는다 — 활 빌드가 안 쓰고, 거래소의 edps 도 원소만 센다
+  const sumRanges = (res) => {
+    let lo = 0, hi = 0, m;
+    for (const re of res) {
+      re.lastIndex = 0;
+      while ((m = re.exec(text)) !== null) {
+        for (const pair of m[1].match(/[\d.]+\s*[-~]\s*[\d.]+/g) || []) {
+          const n = pair.split(/[-~]/);
+          lo += +n[0]; hi += +n[1];
+        }
+      }
+    }
+    return [lo, hi];
+  };
+  const [emin, emax] = sumRanges([RE_ELE, RE_ELE_KR]);
+  if (emin || emax) { out.emin = emin; out.emax = emax; }
+
+  const c = text.match(RE_CRIT); if (c) out.crit = +c[1];
+  const a = text.match(RE_APS);  if (a) out.aps  = +a[1];
+
+  const blocks = text.split(/^-{4,}$/m).map(b => b.split('\n').map(s => s.trim()).filter(Boolean));
+
+  // 이름: 첫 블록에서 "라벨: 값" 형태가 아닌 첫 줄
+  const nameLine = (blocks[0] || []).find(l => !/^[^:]{1,24}\s*:/.test(l));
+  if (nameLine) out.name = nameLine;
+
+  // 옵션: 두 번째 블록부터, 콜론이 없고 숫자를 품은 줄.
+  // 요구 사항("레벨: 62")·소켓·아이템 레벨은 전부 콜론이 있어서 걸러진다.
+  out.mods = blocks.slice(1).flat()
+    .filter(l => !/^[^:]{1,24}\s*:/.test(l) && /\d/.test(l));
+  return out;
+}
+
+/* ---------- 상태 ---------- */
+const $ = id => document.getElementById(id);
+let bows = [];
+bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object');
+function save(){ try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
+
+let reqs = {};                              // { 옵션 열쇠: 최소 문턱값 }
+
+// POE 시세는 리그 초·중·후반이 서로 다른 세계다. 시점이 섞인 곡선은 파레토 최전선이
+// "싼 옛날 매물"을 뽑아버려서 통째로 거짓이 된다 — 그래서 넣은 시각을 반드시 박아둔다.
+const DAY = 86400000;
+const stamped = list => { const t = Date.now(); return list.map(b => Object.assign({ t }, b)); };
+// 실행기 응답에서 쓸 수 있는 매물만 꺼낸다. 모양이 이상해도 던지지 않는다 —
+// 던지면 "지우고 나서 실패"가 되어 기존 목록만 날아간다.
+const freshRows = d => stamped(Array.isArray(d && d.bows) ? d.bows.filter(b => b && typeof b === 'object') : []);
+
+// ---------- 유저스크립트가 주워온 매물 ----------
+// 채집기(poe2-bow-harvester.user.js)가 거래소 페이지에서 흘려받은 매물을 localStorage
+// 'poe2harvest' 로 건네준다. 모양이 이상해도 던지지 않는다 — 부팅이 죽으면 안 된다.
+// 채집 행은 외부 입력이다(다른 유저스크립트·페이지가 localStorage 를 쓸 수 있다).
+// mods 가 문자열이면 offMods 의 for...of 가 글자 단위로 쪼개 조건 목록을 오염시키므로
+// 배열이 아니면 비운다. id 는 문자열만, 시각은 숫자만 받는다.
+const harvestRows = d => (isPlainObject(d) && Array.isArray(d.rows))
+  ? d.rows.filter(r => r && typeof r === 'object' && typeof r.id === 'string' && r.id)
+      .map(r => Object.assign({}, r, { mods: Array.isArray(r.mods) ? r.mods.filter(m => typeof m === 'string') : [] }))
+  : [];
+const HARVEST_TTL = 48 * 60 * 60 * 1000;   // 채집 매물은 이틀이면 낡는다 — 호가는 금방 팔리거나 바뀐다
+function loadHarvest(){
+  const cut = Date.now() - HARVEST_TTL;
+  const rows = harvestRows(readStore('poe2harvest', null, isPlainObject))
+    .filter(r => typeof r.t === 'number' && r.t >= cut);
+  if (!rows.length) return 0;
+  // 스냅샷(snap)과 같은 규칙: 내 표식(hv)이 붙은 지난 것은 버리고 최신으로 갈아끼운다
+  bows = bows.filter(b => !b.hv).concat(rows.map(r => Object.assign({}, r, { hv: true })));
+  return rows.length;
+}
+window.addEventListener('poe2harvest-updated', () => {
+  if (loadHarvest()) { save(); refresh(); }
+});
+const dayStr = t => { const d = new Date(t); return `${d.getMonth() + 1}월 ${d.getDate()}일`; };
+const agoStr = t => {
+  const m = (Date.now() - t) / 60000;
+  if (m < 1) return '방금 전';
+  if (m < 60) return `${Math.round(m)}분 전`;
+  if (m < 60 * 24) return `${Math.round(m / 60)}시간 전`;
+  return `${Math.round(m / (60 * 24))}일 전`;
+};
+const timeStr = t => { const d = new Date(t);
+  return `${dayStr(t)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+
+const RARITY_KO = { Normal: '일반', Magic: '마법', Rare: '희귀', Unique: '고유' };
+const fmt = (n, d = 1) => n.toLocaleString('ko-KR', { minimumFractionDigits: d, maximumFractionDigits: d });
+// 한 목록 안에서는 단위를 하나로 통일해야 눈으로 비교가 된다 (제일 큰 값 기준)
+// 실측 폭이 0.016 ~ 1200 ex 로 워낙 넓어서 목록 단위로 자릿수를 맞추면
+// 작은 값이 전부 0.0 으로 뭉갠다 — 값마다 유효숫자를 맞춘다.
+// DPS 1당은 값이 0.0x 로 뭉개진다. 10 DPS 단위가 자릿수도 낫고
+// "10 더 얻는 데 얼마" 라는 실제 구매 감각에도 가깝다.
+const PER_DPS = 10;
+function perDps(vPerOne){
+  if (!isFinite(vPerOne) || vPerOne <= 0) return '—';
+  return money(vPerOne * PER_DPS);
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
+function shortMod(key, val){                // "#% increased ..." 의 # 을 현재 문턱값으로 채워 읽기 쉽게
+  return val > 0 ? key.replace('#', String(val)) : key;
+}
+
+/* ---------- 조건 슬라이더 ---------- */
+// 슬라이더 DOM 은 데이터가 바뀔 때만 다시 만든다 — 드래그 중 render() 가 지워버리면 안 된다
+function buildRates(){
+  const seen = [...new Set(bows.map(b => b.cur).filter(Boolean))].sort();
+  $('rate-rows').innerHTML = seen.map(c => `
+    <div><label for="rt-${esc(c)}">1 ${esc(c)} = ? ex <span class="src">${esc(rateNote(c))}</span></label>
+      <input id="rt-${esc(c)}" class="num" inputmode="decimal"
+             data-cur="${esc(c)}" value="${rateOf(c)}"></div>`).join('')
+    || '<p class="hint">매물을 불러오면 화폐 목록이 여기 나옵니다.</p>';
+}
+
+// 조건 목록 = 검색으로 직접 잰 것(정확) + 표본에서 분류만 한 것(공짜, 잠정).
+// 분류는 순식간이라 전부 띄우고, 검색은 느리니 회차마다 일부만 채워진다.
+// 어느 쪽인지 화면에 밝히지 않으면 신뢰도가 다른 값이 뒤섞여 보인다.
+function localConds(base){
+  const cnt = new Map();
+  for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
+  const measured = new Set(snapConds.map(c => condKey(c)));
+  return [...cnt.entries()]
+    .filter(([k, n]) => !measured.has(k) && n >= 3)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([k, n]) => ({ label: k, n, local: true }));
+}
+
+function buildConds(){
+  const base = partition().base.filter(v => !v.cond);
+  const el = $('filters');
+  const rows = [{ label: null, text: '조건 없음 (전체 최저가)', tag: '' }]
+    .concat(snapConds.map(c => ({ label: c.label, text: c.label, tag: '측정' })))
+    .concat(localConds(base).map(c => ({ label: c.label, text: c.label,
+                                        tag: `표본 ${c.n}개`, local: true })));
+  el.innerHTML = rows.map(r => `
+    <label class="condrow ${r.label === pickedCond ? 'on' : ''}${r.local ? ' local' : ''}">
+      <input type="radio" name="cond" value="${esc(r.label == null ? '' : r.label)}"
+             ${r.label === pickedCond ? 'checked' : ''}>
+      <span>${esc(r.text)}</span>
+      ${r.tag ? `<em>${esc(r.tag)}</em>` : ''}
+    </label>` + (r.label && r.label === pickedCond && r.local ? bar(base, r.label) : '')).join('');
+}
+
+// 표본에서 분류만 한 조건은 값도 다 갖고 있으니 문턱값을 자유롭게 끌 수 있다.
+// 측정 조건은 그 값으로 검색을 돌린 것이라 바꾸려면 다시 수집해야 한다 — 그래서 막대가 없다.
+function bar(base, key){
+  const vals = base.map(b => b.offs[key]).filter(v => v > 0).sort((a, b) => a - b);
+  const max = vals[vals.length - 1], min = vals[0];
+  // 값이 전부 같으면(화살 +1 처럼) 어디로 끌든 걸리는 활이 그대로다 — 실측으로
+  // 0 과 최대치 양 끝에서 14개로 같았다. 움직여도 아무 일 없는 막대는 안 만든다.
+  if (vals.length < 2 || min === max) return '';
+  const step = vals.every(Number.isInteger) ? 1 : 0.1;
+  return `<div class="condbar">
+    <div class="top"><span>${fmt(min, 0)} 이상</span>
+      <b id="lm-val">${localMin > 0 ? '≥ ' + fmt(localMin, step === 1 ? 0 : 1) : '전부'}</b></div>
+    <input type="range" id="local-min" min="0" max="${max}" step="${step}" value="${localMin}">
+  </div>`;
+}
+
+function buildFilters(base){
+  const groups = new Map();
+  for (const b of base) {
+    for (const [k, v] of Object.entries(b.offs)) {
+      const g = groups.get(k) || { max: 0, n: 0, int: true };
+      g.max = Math.max(g.max, v); g.n++;
+      g.int = g.int && Number.isInteger(v);      // 스킬 레벨 같은 정수 옵션은 0.5 단위가 무의미하다
+      groups.set(k, g);
+    }
+  }
+  const keys = [...groups.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 8);
+  for (const k of Object.keys(reqs)) if (!groups.has(k)) delete reqs[k];   // 사라진 옵션의 조건은 버린다
+
+  if (!keys.length) {
+    $('filters').innerHTML = '<p class="hint">매물을 불러오면 걸 수 있는 옵션이 여기 나옵니다.</p>';
+    return;
+  }
+  $('filters').innerHTML = keys.map(([k, g], i) => {
+    const cur = reqs[k] || 0;
+    const step = g.int ? 1 : (g.max > 20 ? 1 : (g.max > 3 ? 0.5 : 0.1));
+    return `<label class="slider" for="rq${i}">
+      <span class="top">
+        <span class="txt">${esc(shortMod(k, cur))}</span>
+        <span class="val ${cur ? '' : 'off'}" id="rv${i}">${cur ? '≥ ' + fmt(cur, 0) : '조건 없음'}</span>
+      </span>
+      <input type="range" id="rq${i}" data-key="${esc(k)}" min="0" max="${g.max}" step="${step}" value="${cur}">
+    </label>`;
+  }).join('');
+}
+
+$('filters').addEventListener('input', e => {
+  const el = e.target;
+  // 조건 목록의 문턱값 막대도 type=range 라 여기로 들어온다. 그걸 처리하려 들면
+  // closest('.slider') 가 null 이라 예외가 나고, reqs["undefined"] 까지 오염된다.
+  if (el.type !== 'range' || !el.dataset.key) return;
+  const v = +el.value;
+  if (v > 0) reqs[el.dataset.key] = v; else delete reqs[el.dataset.key];
+  const box = el.closest('.slider');
+  box.querySelector('.txt').textContent = shortMod(el.dataset.key, v);
+  const val = box.querySelector('.val');
+  val.textContent = v ? '≥ ' + fmt(v, 0) : '조건 없음';
+  val.classList.toggle('off', !v);
+  render();
+});
+
+/* ---------- 렌더 ---------- */
+function refresh(){                         // 데이터가 바뀐 뒤엔 슬라이더·환율칸까지 다시 만든다
+  buildRates();
+  // 수집기가 실제로 재온 조건이 있으면 그걸 쓴다. 슬라이더는 그런 데이터가 없을 때
+  // (직접 등록만 있을 때)의 대비책 — 측정값이 있는데 추정으로 덮을 이유가 없다.
+  const p0 = partition().base.filter(v => !v.cond);
+  if (snapConds.length || p0.some(b => Object.keys(b.offs).length)) buildConds();
+  else buildFilters(p0);
+  render();
+}
+
+$('filters').addEventListener('change', e => {
+  if (e.target.name !== 'cond') return;
+  const hadFocus = document.activeElement === e.target;
+  pickedCond = e.target.value || null;
+  localMin = 0;                       // 조건을 바꾸면 문턱값은 초기화한다
+  buildConds();
+  // buildConds() 가 목록을 innerHTML 로 통째로 다시 그리므로 방금 고른 라디오가 문서에서
+  // 사라진다. 그대로 두면 포커스가 body 로 날아가서, 키보드 사용자는 화살표로 목록을
+  // 한 칸 움직인 뒤 더는 움직일 수 없다(실측: activeElement 가 BODY, 그 라디오는 문서 밖).
+  if (hadFocus) focusChecked();
+  render();
+});
+// 다시 그린 목록에서 지금 선택된 라디오로 포커스를 되돌린다
+function focusChecked(){
+  const box = $('filters');
+  const el = box && box.querySelector && box.querySelector('input[name=cond]:checked');
+  if (el && el.focus) el.focus({ preventScroll: true });
+  return !!el;
+}
+$('filters').addEventListener('input', e => {
+  if (e.target.id !== 'local-min') return;
+  localMin = +e.target.value || 0;
+  const v = $('lm-val');
+  if (v) v.textContent = localMin > 0 ? '≥ ' + fmt(localMin, Number.isInteger(localMin) ? 0 : 1) : '전부';
+  render();                           // 막대 DOM 은 그대로 둬야 드래그가 안 끊긴다
+});
+
+// 뺀 활이 왜 빠졌는지 따로 세어둔다 — "등급 때문"과 "이 기준으론 DPS 가 0이라"는 전혀 다른 얘기다
+function partition(){
+  const metric = $('metric').value;
+  const critOn = $('crit-on').checked;
+  const critBonus = +$('crit-bonus').value || 0;
+  // 직접 등록한 활은 등급 정보가 없다 — 사용자가 일부러 넣은 것이므로 절대 거르지 않는다
+  const rareOnly = $('rare-only').checked;
+  const all = bows.map((b, i) => {
+    const raw = dpsOf(b);
+    const k = critOn ? 1 + (b.crit || 0) / 100 * (critBonus / 100) : 1;
+    const d = { phys: raw.phys * k, ele: raw.ele * k, total: raw.total * k };
+    return { src: b, i, name: b.name, aps: b.aps, crit: b.crit, rarity: b.rarity,
+             cond: b.cond || null,
+             offs: offMods(b), dps: d, d: d[metric], p: exPrice(b) };
+  });
+  const rarityOk = v => !rareOnly || !v.rarity || v.rarity === 'Rare';
+  return {
+    base: all.filter(v => rarityOk(v) && v.d > 0 && v.p > 0),
+    byRarity: all.filter(v => !rarityOk(v)).length,
+    byMetric: all.filter(v => rarityOk(v) && !(v.d > 0 && v.p > 0)).length,
+  };
+}
+
+// 옵션마다 자기 최전선을 만든다. 기준(조건 없음) + 검색으로 잰 것 + 표본에서 분류한 것.
+function optionFronts(all){
+  // 기준선은 "조건 없이 검색해 나온 것"이 아니라 "가진 매물 전부"다.
+  // 치명타가 붙은 활도 조건 없는 사람에겐 그냥 살 수 있는 활이다 — 이걸 빼면
+  // 조건 곡선이 기준을 넘는 모순이 생긴다(실측 708 > 679).
+  const base = all;
+  const out = [{ label: '조건 없음', kind: '', front: frontier(base) }];
+  for (const c of snapConds) {
+    const f = frontier(all.filter(v => v.cond === c.label));
+    if (f.length) out.push({ label: c.label, kind: '측정', front: f });
+  }
+  const measured = new Set(snapConds.map(c => condKey(c)));
+  const cnt = new Map();
+  for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
+  for (const [k, n] of [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+    if (measured.has(k) || n < 3) continue;   // 표본 1~2개로는 곡선이라 부를 게 없다
+    const f = frontier(base.filter(v => (v.offs[k] || 0) > 0));
+    if (f.length) out.push({ label: k, kind: `표본 ${n}`, front: f });
+  }
+  return out;
+}
+
+// 예산 슬라이더는 로그로 움직인다 — 값이 1엑잘부터 만 단위까지라 선형이면 왼쪽 끝에 다 몰린다
+function budgetRange(rows){
+  const ps = rows.flatMap(r => r.front.map(x => x.p)).filter(p => p > 0);
+  if (!ps.length) return null;
+  return { lo: Math.min(...ps), hi: Math.max(...ps) };
+}
+function posToBudget(pos, r){
+  const t = Math.min(1000, Math.max(0, pos)) / 1000;
+  return r.lo * Math.pow(r.hi / r.lo, t);
+}
+
+function renderBudget(all){
+  const rows = optionFronts(all);
+  const range = budgetRange(rows);
+  const card = $('budget-card');
+  if (!range || rows.length < 2) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  if (budgetPos === null) budgetPos = 620;           // 처음엔 곡선이 꺾이는 근처를 보여준다
+  const budget = posToBudget(budgetPos, range);
+  $('budget').value = String(budgetPos);
+  $('budget-val').textContent = money(budget);
+
+  const scored = rows.map(r => ({ ...r, dps: dpsAt(r.front, budget) }));
+  const baseDps = scored[0].dps;
+  const rest = scored.slice(1).sort((a, b) => (b.dps || 0) - (a.dps || 0));
+  const maxDps = Math.max(...scored.map(r => r.dps || 0), 1);
+
+  $('oplist').innerHTML = [scored[0], ...rest].map((r, i) => {
+    if (r.dps == null) {
+      return `<li><span class="nm">${esc(r.label)}${r.kind ? `<em>${esc(r.kind)}</em>` : ''}</span>
+        <span class="none">이 예산으로는 못 삽니다</span></li>`;
+    }
+    const gap = baseDps == null ? null : r.dps - baseDps;
+    return `<li class="${i === 0 ? 'baserow' : ''}">
+      <span class="nm">${esc(r.label)}${r.kind ? `<em>${esc(r.kind)}</em>` : ''}</span>
+      <span class="track"><span class="fill" style="width:${(r.dps / maxDps * 100).toFixed(1)}%"></span></span>
+      <span class="dps num">${fmt(r.dps, 0)} DPS</span>
+      <span class="gap num ${gap != null && gap < -1 ? 'bad' : ''}">${
+        i === 0 || gap == null ? '기준' : (gap >= -0.5 ? '동일' : fmt(gap, 0))}</span>
+    </li>`;
+  }).join('');
+}
+
+$('logy').addEventListener('change', e => { logYAxis = e.target.checked; render(); });
+$('budget').addEventListener('input', e => {
+  budgetPos = +e.target.value;
+  render();
+});
+
+function render(){
+  $('crit-row').style.display = $('crit-on').checked ? '' : 'none';
+  $('th-dps').textContent = $('crit-on').checked ? '총 DPS (치명 반영)' : '총 DPS';
+
+  const part = partition();
+  const all = part.base.sort((a, b) => a.p / a.d - b.p / b.d);
+  // 조건 없는 매물이 기준 곡선. 조건 곡선은 그 조건으로 따로 검색해 받아온 점들이다.
+  const base = all;                 // 기준선 = 가진 매물 전부 (위 optionFronts 와 같은 정의)
+  const measured = snapConds.length > 0;
+  const meets = v => Object.entries(reqs).every(([k, min]) => (v.offs[k] || 0) >= min);
+  const isMeasured = pickedCond && snapConds.some(c => c.label === pickedCond);
+  const view = !pickedCond ? base
+    : isMeasured ? all.filter(v => v.cond === pickedCond)      // 검색으로 직접 잰 곡선
+                 : base.filter(v => (v.offs[pickedCond] || 0) >= Math.max(localMin, 0.0001));
+  const active = measured ? !!pickedCond : (pickedCond ? true : Object.keys(reqs).length > 0);
+
+  $('match-count').textContent = base.length
+    ? (active ? `조건 ${view.length}점 / 기준 ${base.length}개` : `${base.length}개`) : '';
+  const byOption = base.length - view.length;
+  $('filtered').textContent = [
+    part.byRarity ? `희귀가 아닌 ${part.byRarity}개 제외` : '',
+    part.byMetric ? `지금 비교 기준으로는 DPS나 가격이 0인 ${part.byMetric}개 제외` : '',
+    active && byOption ? `옵션 조건으로 ${byOption}개 제외` : '',
+  ].filter(Boolean).join(' · ');
+
+  // 표시 화폐: 자동이면 이번 데이터에서 숫자가 가장 짧게 나오는 화폐를 고른다
+  unitAuto = base.length ? pickUnit(Math.min(...base.map(b => b.p))) : 'exalted';
+  $('th-price').textContent = `가격 (${UNIT_LABEL[activeUnit()] || activeUnit()})`;
+  const lowest = base.length ? Math.min(...base.map(b => b.p)) : 0;
+  $('unit-note').textContent = (lowest && toUnit(lowest) < 0.1)
+    ? '싼 매물이 0에 가깝게 보입니다' : '';
+
+  const front = new Set(frontier(view));
+  const baseFront = frontier(base);
+
+  // 비어 보이는 이유를 정확히 말한다 — 데이터가 없는 것과 조건이 다 걸러낸 것은 다르다
+  $('empty').textContent = !bows.length ? '아직 등록된 활이 없습니다.'
+    : !base.length ? '지금 비교 기준으로는 DPS가 0인 활뿐입니다. 아래 “기준 설정”을 확인하세요.'
+    : '조건에 맞는 활이 없습니다. 문턱값을 낮춰보세요.';
+  $('empty').style.display = view.length ? 'none' : '';
+  $('rows').innerHTML = view.map(b => {
+    const chips = Object.entries(b.offs).slice(0, 3)
+      .map(([k, v]) => `<span class="pill note">${esc(shortMod(k, v))}</span>`).join('');
+    return `<tr class="${front.has(b) ? 'front' : ''}">
+      <td><span class="name">${esc(b.name || '이름 없음')}</span><span class="sub num">${fmt(b.aps, 2)} aps · 치명 ${fmt(b.crit || 0, 2)}%${b.rarity && b.rarity !== 'Rare' ? ' · ' + esc(RARITY_KO[b.rarity] || b.rarity) : ''}</span></td>
+      <td class="num">${fmt(b.dps.phys)}</td>
+      <td class="num">${fmt(b.dps.ele)}</td>
+      <td class="num">${fmt(b.dps.total)}</td>
+      <td>${chips ? `<span class="pills">${chips}</span>` : '<span class="sub">—</span>'}</td>
+      <td class="num">${money(b.p)}</td>
+      <td class="num">${perDps(b.p / b.d)}</td>
+      <td>${front.has(b) ? '<span class="pill best">최전선</span>' : '<span class="pill over">비쌈</span>'}</td>
+      <td><button class="del" data-i="${b.i}" aria-label="삭제">×</button></td>
+    </tr>`;
+  }).join('');
+
+  const f = [...front];                       // frontier() 가 이미 DPS 오름차순
+  const steps = [];
+  for (let i = 1; i < f.length; i++) {
+    const dd = f[i].d - f[i - 1].d, dp = f[i].p - f[i - 1].p;
+    if (dd > 0) steps.push({ from: f[i - 1], to: f[i], dd, dp, unit: dp / dd });
+  }
+  // 계단 값이 전부 같으면 강조할 게 없다 (다 칠하면 아무것도 안 튄다)
+  const units = new Set(steps.map(s => s.unit));
+  const cheapest = units.size > 1 ? Math.min(...units) : null;
+  $('ladder').innerHTML = steps.length ? steps.map(s => `
+    <li class="${s.unit === cheapest ? 'knee' : ''}">
+      <span class="step">${esc(s.from.name || '?')} → <strong>${esc(s.to.name || '?')}</strong>
+        <span class="sub num">DPS +${fmt(s.dd)} · ${money(s.dp)} 추가</span></span>
+      <span class="cost num">${perDps(s.unit)}<small>DPS 10당</small></span>
+    </li>`).join('')
+    : '<li><span class="step">최전선에 활이 2개 이상 있어야 계단이 나옵니다.</span></li>';
+
+  renderBudget(all);
+  premium(f, baseFront, active);
+  freshness(base);
+  chart(base, view, front, active ? baseFront : null);
+}
+
+// 곡선이 "언제의 시세"인지 밝힌다. 절대적 신선도보다 내부 일관성이 중요하다 —
+// 전부 1주차 가격이면 1주차 곡선으로 유효하지만, 1주차와 6주차가 섞이면 최전선이 거짓이 된다.
+// 언제 기준 데이터인지만 분명히 알려주면 한 시간 전 시세도 충분히 쓸모 있다.
+// 오래됐다고 잔소리하지 않는다. 경고는 "시점이 섞였을 때"만 — 그건 취향이 아니라
+// 곡선이 실제로 틀어지는 경우다(옛 매물이 최전선으로 잡힌다).
+function freshness(base){
+  const el = $('freshness'), up = $('updated');
+  el.className = 'freshness';
+  el.textContent = '';
+  up.style.display = 'none';
+  if (!base.length) return;
+
+  const ts = base.map(b => b.src.t).filter(Boolean);
+  const unknown = base.length - ts.length;
+  if (!ts.length) {
+    el.className = 'freshness warn';
+    el.textContent = '이 매물들은 언제 시세인지 기록이 없습니다(이전 버전에서 저장된 것). '
+      + '새로 불러오면 기준 시각이 표시됩니다.';
+    return;
+  }
+  const lo = Math.min(...ts), hi = Math.max(...ts);
+
+  up.style.display = '';
+  up.innerHTML = `<strong>${esc(agoStr(hi))}</strong> 기준 시세 · ${esc(timeStr(hi))} · 기준 매물 ${base.length}개`;
+
+  if ((hi - lo) / DAY > 2 || unknown) {
+    el.className = 'freshness warn';
+    el.innerHTML = `<strong>시점이 섞여 있습니다</strong> — `
+      + (unknown ? `시점 불명 ${unknown}개, ` : '')
+      + `${dayStr(lo)}~${dayStr(hi)}. 다른 시점의 가격이 한 곡선에 들어가면 `
+      + `옛 매물이 최전선으로 잡혀 지금 시세를 반영하지 못합니다.`
+      + `<button id="purge-old">최근 것만 남기기</button>`;
+  }
+}
+
+$('freshness').addEventListener('click', e => {
+  if (e.target.id !== 'purge-old') return;
+  const ts = bows.map(b => b.t).filter(Boolean);
+  if (!ts.length) return;
+  const cut = Math.max(...ts) - DAY;                 // 가장 최근 묶음에서 하루 안쪽만 남긴다
+  const drop = bows.length - bows.filter(b => b.t >= cut).length;
+  if (!confirm(`${drop}개를 지웁니다. 되돌릴 수 없습니다.`)) return;
+  bows = bows.filter(b => b.t >= cut);
+  save(); refresh();
+});
+
+// 조건을 건 곡선이 기준 곡선보다 같은 DPS에서 얼마나 비싼가
+function premium(f, baseFront, active){
+  const el = $('premium');
+  if (!active) {
+    el.className = 'premium none';
+    el.textContent = '조건을 걸면 그 옵션에 얼마를 더 내야 하는지 여기 나옵니다.';
+    return;
+  }
+  // 조건 곡선의 점 위치에서만 재면, 그 점들이 원래 곡선 위에 놓였을 때 항상 0 이 나온다.
+  // 두 곡선이 함께 정의된 DPS 구간을 고르게 훑어서 비교한다.
+  const gaps = [];
+  if (f.length && baseFront.length) {
+    const lo = Math.max(f[0].d, baseFront[0].d);
+    const hi = Math.min(f[f.length - 1].d, baseFront[baseFront.length - 1].d);
+    const N = 20;
+    for (let i = 0; i <= N; i++) {
+      const d = hi > lo ? lo + (hi - lo) * i / N : lo;
+      const now = priceAt(f, d), was = priceAt(baseFront, d);
+      if (now && was && was > 0) gaps.push({ abs: now - was, pct: (now - was) / was * 100 });
+      if (!(hi > lo)) break;                // 겹치는 구간이 한 점뿐이면 한 번만 재면 된다
+    }
+  }
+  if (!gaps.length) {
+    el.className = 'premium none';
+    el.textContent = '조건에 맞는 활이 없습니다. 문턱값을 낮추거나 매물을 더 불러오세요.';
+    return;
+  }
+  const mid = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const abs = mid(gaps.map(g => g.abs)), pct = mid(gaps.map(g => g.pct));
+  el.className = 'premium';
+
+  // 서로 다른 점이 하나뿐이면 그건 "곡선"이 아니다 — 곡선인 척 말하지 않는다
+  if (distinctPts(f) < 2) {
+    el.innerHTML = abs <= 0.01
+      ? '조건에 맞는 활이 <strong>1개</strong>뿐이고, 그게 같은 DPS 최저가입니다. '
+        + '다만 이 조건 때문에 더 싼 낮은 DPS 매물을 포기하고 있을 수 있으니 아래 표도 보세요.'
+      : `조건에 맞는 활이 <strong>1개</strong>뿐입니다 — 같은 DPS 최저가보다 `
+        + `<strong>+${money(abs)}</strong> 비쌉니다. 곡선을 그리려면 매물이 더 필요합니다.`;
+    return;
+  }
+  el.innerHTML = abs <= 0.01
+    ? '이 조건은 <strong>값을 거의 안 올립니다</strong> — 같은 DPS를 같은 가격에 살 수 있으니 걸어도 손해가 없습니다.'
+    : `이 조건을 걸면 같은 DPS를 사는 데 <strong>+${money(abs)}</strong> `
+      + `(약 <strong>+${fmt(pct, 0)}%</strong>) 더 듭니다.`;
+}
+
+const tickLabel = u => u === 0 ? '0' : fmt(u, decimalsFor(u));
+function chart(base, view, front, baseFront){
+  if (base.length < 2) { $('chart').innerHTML = '<div class="empty">활 2개 이상부터 곡선이 그려집니다.</div>'; $('legend').innerHTML = ''; return; }
+  // R 은 오른쪽 끝 점(반지름 5)과 그 밑 눈금 글자가 잘리지 않을 만큼 둔다
+  const W = 880, H = 420, L = 58, R = 34, T = 18, B = 40;
+  const xs = base.map(b => b.d), ys = base.map(b => b.p).filter(p => p > 0);
+  const x0 = Math.min(...xs) * 0.96, x1 = Math.max(...xs) * 1.04;
+  const X = v => L + (v - x0) / (x1 - x0 || 1) * (W - L - R);
+
+  // 값이 1엑잘부터 만 단위까지 4자릿수를 걸쳐서, 선형축이면 아래 절반이 바닥에 눌린다.
+  // 로그축에선 지수 곡선이 직선이 되고 기울기가 곧 "DPS당 배율"이라 꺾이는 지점이 보인다.
+  const logY = logYAxis;
+  const y1 = Math.max(...ys) * 1.1 || 1;
+  const y0 = Math.max(Math.min(...ys) * 0.8, y1 * 1e-6) || 1;
+  const lg = v => Math.log10(Math.max(v, y0));
+  const Y = logY
+    ? v => H - B - (lg(v) - lg(y0)) / ((lg(y1) - lg(y0)) || 1) * (H - T - B)
+    : v => H - B - v / y1 * (H - T - B);
+
+  const ticks = logY
+    ? (() => {                                   // 10의 거듭제곱 자리에만 눈금
+        const out = [];
+        for (let e = Math.floor(Math.log10(y0)); e <= Math.ceil(Math.log10(y1)); e++) {
+          const v = Math.pow(10, e);
+          if (v >= y0 && v <= y1) out.push(v);
+        }
+        return out.length > 1 ? out : [y0, y1];
+      })()
+    : [0, .25, .5, .75, 1].map(t => y1 * t);
+  const grid = ticks.map(v =>
+    `<line class="gridline" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/>` +
+    `<text class="tick" x="${L - 8}" y="${Y(v) + 4}" text-anchor="end">${
+      tickLabel(toUnit(v))}</text>`).join('');
+  const xt = [x0, (x0 + x1) / 2, x1].map(v =>
+    `<text class="tick" x="${X(v)}" y="${H - 14}" text-anchor="middle">${fmt(v, 0)}</text>`).join('');
+
+  const path = (list, cls) => list.length > 1
+    ? `<polyline class="${cls}" points="${list.map(b => X(b.d) + ',' + Y(b.p)).join(' ')}"/>` : '';
+  const inView = new Set(view);
+  const dots = base.map(b => {
+    const on = front.has(b), dim = !inView.has(b);
+    return `<circle class="dot ${on ? 'front' : ''}" cx="${X(b.d)}" cy="${Y(b.p)}" r="${on ? 5 : 3.5}"`
+      + `${dim ? ' opacity="0.28"' : ''}>`
+      + `<title>${esc(b.name || '')} · DPS ${fmt(b.d)} · ${money(b.p)}</title></circle>`;
+  }).join('');
+
+  $('chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="DPS 대비 가격 산점도">
+    ${grid}<line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>${xt}
+    ${baseFront ? path(baseFront, 'baseline') : ''}${path([...front], 'frontline')}${dots}
+    </svg>`;   // 축 단위는 카드 설명문이 이미 말해준다 — 여기 넣으면 눈금 숫자와 겹친다
+  $('legend').innerHTML = `<span><i class="sel"></i>가로축 DPS · 세로축 가격(${esc(UNIT_LABEL[activeUnit()] || activeUnit())})${logY ? ' 로그' : ''}</span>`
+    + (baseFront ? '<span><i class="base"></i>조건 없을 때</span>' : '');
+}
+
+/* ---------- 입력 ---------- */
+$('paste').addEventListener('input', e => {
+  const v = parseItem(e.target.value);
+  const set = (id, val) => { if (val !== undefined) $(id).value = val; };
+  set('f-name', v.name); set('f-aps', v.aps); set('f-crit', v.crit);
+  set('f-pmin', v.pmin); set('f-pmax', v.pmax);
+  set('f-emin', v.emin); set('f-emax', v.emax);
+});
+function clearForm(){
+  ['paste','f-name','f-aps','f-crit','f-pmin','f-pmax','f-emin','f-emax','f-price']
+    .forEach(i => { $(i).value = ''; });
+}
+$('add').addEventListener('click', () => {
+  const n = id => +$(id).value || 0;
+  const b = { name: $('f-name').value.trim(), aps: n('f-aps'), crit: n('f-crit'),
+              pmin: n('f-pmin'), pmax: n('f-pmax'), emin: n('f-emin'), emax: n('f-emax'),
+              price: n('f-price'), cur: $('f-cur').value,
+              mods: parseItem($('paste').value).mods };
+  if (!b.aps || (!b.pmax && !b.emax) || !b.price) { alert('초당 공격, 피해, 가격은 있어야 계산됩니다.'); return; }
+  bows.push(stamped([b])[0]); save(); refresh(); clearForm();
+});
+$('clearform').addEventListener('click', clearForm);
+$('rows').addEventListener('click', e => {
+  const btn = e.target.closest('.del'); if (!btn) return;
+  // refresh() 가 표를 다시 그리면 누른 버튼이 사라진다. 키보드로 여러 개를 지울 때
+  // 포커스가 매번 body 로 떨어지면 처음부터 Tab 해서 돌아와야 한다 — 옆자리로 옮겨준다.
+  const hadFocus = document.activeElement === btn;
+  const pos = [...$('rows').querySelectorAll('.del')].indexOf(btn);
+  bows.splice(+btn.dataset.i, 1); save(); refresh();
+  if (hadFocus) {
+    const left = $('rows').querySelectorAll('.del');
+    if (left.length) left[Math.min(pos, left.length - 1)].focus({ preventScroll: true });
+  }
+});
+$('wipe').addEventListener('click', () => {
+  if (confirm('등록한 활을 전부 지웁니다.')) { bows = []; reqs = {}; save(); refresh(); }
+});
+$('unit').addEventListener('change', e => {
+  unit = e.target.value;
+  try { localStorage.setItem('poe2unit', unit); } catch (err) {}
+  render();
+});
+$('metric').addEventListener('change', render);
+$('rate-rows').addEventListener('input', e => {
+  if (!e.target.dataset.cur) return;
+  rates[e.target.dataset.cur] = +e.target.value || 0;
+  try { localStorage.setItem('poe2rates', JSON.stringify(rates)); } catch (err) {}
+  render();
+});
+$('rare-only').addEventListener('change', refresh);
+$('crit-on').addEventListener('change', render);
+$('crit-bonus').addEventListener('input', render);
+$('demo').addEventListener('click', () => {
+  bows = bows.concat(stamped([
+    { name: '입문용 희귀활',   aps: 1.30, crit: 5.0, pmin: 38, pmax: 72,  emin: 0,  emax: 0,  price: 1,  cur: 'divine', rarity: 'Rare', mods: [] },
+    { name: '중간 물리활',     aps: 1.38, crit: 6.5, pmin: 55, pmax: 104, emin: 0,  emax: 0,  price: 6,  cur: 'divine', rarity: 'Rare', mods: ['30% increased Critical Hit Chance'] },
+    { name: '하이브리드 듀얼', aps: 1.45, crit: 6.0, pmin: 48, pmax: 92,  emin: 22, emax: 41, price: 14, cur: 'divine', rarity: 'Rare', mods: ['+2 to Level of all Projectile Skills'] },
+    { name: '고급 크래프트',   aps: 1.52, crit: 7.0, pmin: 68, pmax: 128, emin: 0,  emax: 0,  price: 42, cur: 'divine', rarity: 'Rare', mods: ['52% increased Critical Hit Chance', '+4 to Level of all Projectile Skills'] },
+    { name: '바가지 매물',     aps: 1.35, crit: 6.0, pmin: 50, pmax: 95,  emin: 0,  emax: 0,  price: 30, cur: 'divine', rarity: 'Rare', mods: [] }
+  ]));
+  save(); refresh();
+});
+
+/* ---------- 거래소 불러오기 (로컬 실행기 serve.py 가 대신 조회) ---------- */
+const status = msg => { $('trade-status').textContent = msg; };
+fetch('/api/ping')
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok !== true) throw new Error('no proxy');
+    if (!d.poesessid) status('POESESSID 미설정 — 거래소가 로그인을 요구하면 실행기를 껐다 다시 켜세요.');
+  })
+  .catch(() => {                            // 아티팩트/파일로 열면 프록시가 없다 — 이유를 라벨에 밝힌다
+    $('trade-go').disabled = true;
+    $('trade-go').textContent = '실행기 필요';
+    $('trade-url').disabled = true;
+    status('거래소는 외부 사이트의 요청을 막아둬서(CORS), 자동 조회는 같은 폴더의 serve.py 를 '
+      + '실행했을 때만 됩니다: python serve.py — 그 전까진 아래 "직접 등록"으로 넣으세요.');
+  });
+
+$('trade-go').addEventListener('click', async () => {
+  const url = $('trade-url').value.trim();
+  if (!url) { status('거래소 검색 링크를 넣어주세요.'); return; }
+  const limit = Math.max(1, Math.min(100, +$('trade-limit').value || 20));
+  $('trade-go').disabled = true;
+  status('불러오는 중…');
+  try {
+    const d = await (await fetch(`/api/trade?url=${encodeURIComponent(url)}&limit=${limit}`)).json();
+    if (d.error) { status(d.error); return; }
+    // 받아온 것을 확인하고 나서 지운다. 순서가 반대면 결과가 0개일 때 — 검색은 됐지만
+    // 화폐나 DPS 문제로 전부 걸러진 경우 — 이미 비운 뒤라 되돌릴 게 없다.
+    // 실측: 스냅샷 116개 + 손으로 넣은 활 1개가 localStorage 까지 통째로 사라졌고,
+    // 안내문은 "0개 불러옴" 이라 성공한 것처럼 보였다. 손으로 넣은 활은 복구할 방법도 없다.
+    const fresh = freshRows(d);
+    if (!fresh.length) {
+      status(`가져올 매물이 없습니다 (검색 결과 ${d.total || 0}개`
+        + (d.skipped ? `, ${d.skipped}개는 가격이나 DPS가 없어 제외` : '')
+        + '). 기존 목록은 그대로 뒀습니다.');
+      return;
+    }
+    if ($('trade-mode').value === 'replace') { bows = []; reqs = {}; }
+    bows = bows.concat(fresh);
+    save(); refresh();
+    status(`${fresh.length}개 불러옴 (검색 결과 ${d.total}개`
+      + (d.skipped ? `, ${d.skipped}개는 가격이나 DPS가 없어 제외` : '') + ')');
+  } catch (e) {
+    status('불러오기 실패: ' + e.message);
+  } finally {
+    $('trade-go').disabled = false;
+  }
+});
+
+/* ---------- 자체 검증 ---------- */
+(function selfTest(){
+  try {
+    const d = dpsOf({ pmin: 50, pmax: 100, emin: 10, emax: 20, aps: 1.5 });
+    if (d.phys !== 112.5 || d.ele !== 22.5 || d.total !== 135) throw new Error('dps');
+
+    const t = dpsOf({ pdps: 112.5, edps: 22.5, aps: 1.5 });   // 거래소가 준 값을 그대로
+    if (t.phys !== 112.5 || t.ele !== 22.5 || t.total !== 135) throw new Error('dps trade');
+
+    // 120@30 은 150@18 에게, 150@20 도 150@18 에게 밀린다
+    const f = frontier([{ d: 100, p: 5 }, { d: 150, p: 20 }, { d: 120, p: 30 }, { d: 150, p: 18 }]);
+    if (f.length !== 2 || f[0].d !== 100 || f[1].p !== 18) throw new Error('frontier');
+
+    // 100@10 과 200@30 사이 → 150 이면 20
+    const pf = [{ d: 100, p: 10 }, { d: 200, p: 30 }];
+    if (priceAt(pf, 150) !== 20 || priceAt(pf, 50) !== 10 || priceAt(pf, 300) !== null) throw new Error('priceAt');
+    // 거꾸로: 실제로 살 수 있는 매물의 DPS 만 답한다 (없는 값을 지어내지 않는다)
+    if (dpsAt(pf, 20) !== 100 || dpsAt(pf, 30) !== 200 || dpsAt(pf, 99) !== 200) throw new Error('dpsAt');
+    if (dpsAt(pf, 9) !== null || dpsAt([], 100) !== null) throw new Error('dpsAt none');
+    if (dpsAt(pf, 10) !== 100) throw new Error('dpsAt exact');
+    // 같은 값 매물이 여럿이어도 "서로 다른 점"은 하나다 — 이걸 곡선으로 세면 안 된다
+    if (distinctPts([{ d: 1, p: 2 }, { d: 1, p: 2 }, { d: 1, p: 2 }]) !== 1) throw new Error('distinctPts dup');
+    if (distinctPts([{ d: 1, p: 2 }, { d: 1, p: 3 }]) !== 2) throw new Error('distinctPts diff');
+    if (distinctPts([]) !== 0) throw new Error('distinctPts empty');
+
+    // 저장값이 깨져 있어도 부팅은 되어야 한다 — 모양까지 확인하는지
+    const store = {};
+    const fake = { getItem: k => (k in store ? store[k] : null) };
+    const read = (raw, fb, ok) => { store.k = raw;
+      try { const v = JSON.parse(fake.getItem('k') || 'null'); return ok(v) ? v : fb; }
+      catch (e) { return fb; } };
+    for (const bad of ['123', '"문자열"', 'null', '{잘못된 JSON', '{"a":1}']) {
+      if (!Array.isArray(read(bad, [], Array.isArray))) throw new Error('readStore array ' + bad);
+    }
+    if (read('[{"n":1}]', [], Array.isArray).length !== 1) throw new Error('readStore keeps good array');
+    for (const bad of ['123', '[]', 'null', '"x"']) {
+      if (!isPlainObject(read(bad, {}, isPlainObject))) throw new Error('readStore object ' + bad);
+    }
+    // 부분집합이 전체보다 좋을 수는 없다 — 보간하면 이 성질이 깨진다
+    const whole = [{ d: 100, p: 10 }, { d: 120, p: 30 }, { d: 200, p: 40 }];
+    const part = [{ d: 100, p: 10 }, { d: 200, p: 40 }];
+    for (const bgt of [10, 15, 25, 35, 45]) {
+      if (dpsAt(part, bgt) > dpsAt(whole, bgt)) throw new Error('dpsAt monotone ' + bgt);
+    }
+
+    if (modKey('38% increased Critical Hit Chance') !== '#% increased Critical Hit Chance') throw new Error('modKey');
+    // 한국 거래소 실제 응답 형태 (이중 언어 마크업)
+    if (cleanMod('[Physical|물리] 피해 #% 증가') !== '물리 피해 #% 증가') throw new Error('cleanMod');
+    if (modKey('[Accuracy|정확도] +58') !== '정확도 #') throw new Error('modKey markup');
+    if (modVal('[Accuracy|정확도] +58') !== 58) throw new Error('modVal markup');
+    if (modKey('치명타 명중 확률 28% 증가') !== '치명타 명중 확률 #% 증가') throw new Error('modKey ko');
+    // 수집기와 같은 규칙: 부호는 지운다
+    if (modKey('[Dexterity|민첩] +29') !== '민첩 #') throw new Error('modKey sign');
+    if (modKey('모든 투사체 스킬 레벨 +3') !== '모든 투사체 스킬 레벨 #') throw new Error('modKey lvl');
+    if (modVal('+412 to Accuracy Rating') !== 412) throw new Error('modVal');
+    // 한국 거래소 실제 응답: 마크업이 붙은 채로 와도 DPS 반영 옵션으로 걸러져야 한다
+    if (isOffDps('[Physical|물리] 피해 118% 증가')) throw new Error('counted markup phys');
+    if (isOffDps('[Lightning|번개] 피해 12~24 추가')) throw new Error('counted markup added');
+    if (!isOffDps('[Accuracy|정확도] +58')) throw new Error('offdps markup');
+    if (isOffDps('120% increased Physical Damage') || isOffDps('15% increased Attack Speed')
+        || isOffDps('Adds 5 to 9 Fire Damage') || isOffDps('물리 피해 118% 증가')) throw new Error('counted');
+    if (!isOffDps('38% increased Critical Hit Chance')) throw new Error('offdps');
+    // 동료(반려수) 옵션은 무기 DPS 와 무관하다 — "이미 셈"으로 삼키면 조건에서 사라진다
+    if (!isOffDps('[Companion|반려수]의 [Attack|공격] 속도 14% 증가')) throw new Error('반려수 공속');
+    if (!isOffDps('접근해 있는 반려수의 공격 속도 9% 증가')) throw new Error('접근 반려수');
+    if (!isOffDps('피해의 6%를 추가 카오스 피해로 획득')) throw new Error('추가 획득은 DPS 밖');
+    if (isOffDps('공격 속도 12% 증가') || isOffDps('물리 피해 118% 증가')) throw new Error('무기 자체 옵션');
+
+    const o = offMods({ mods: ['38% increased Critical Hit Chance', '120% increased Physical Damage',
+                               '25% increased Critical Hit Chance', '+3 to Level of all Skills'] });
+    if (Object.keys(o).length !== 2) throw new Error('offMods count');
+    if (o['#% increased Critical Hit Chance'] !== 38) throw new Error('offMods max');   // 같은 옵션은 큰 값
+    if (Object.keys(offMods({})).length) throw new Error('offMods empty');
+
+    const it = parseItem('Item Class: Bows\nRarity: Rare\nDoom Song\nAdvanced Zealot Bow\n--------\n'
+      + 'Physical Damage: 52-97 (augmented)\nElemental Damage: 5-9, 18-33\n'
+      + 'Critical Hit Chance: 6.50%\nAttacks per Second: 1.42');
+    if (it.pmin !== 52 || it.pmax !== 97 || it.emin !== 23 || it.emax !== 42
+        || it.aps !== 1.42 || it.crit !== 6.5 || it.name !== 'Doom Song') throw new Error('parse en');
+
+    const kr = parseItem([                       // 한국어 클라이언트 표기 (poe2db.tw/kr 기준)
+      '아이템 종류: 활', '희귀도: 희귀', '파멸의 노래', '고급 광신도 활', '--------',
+      '품질: +20% (증가됨)', '물리 피해: 52-97 (증가됨)', '원소 피해: 18-33 (증가됨)',
+      '카오스 피해: 5-9', '치명타 명중 확률: 6.50%', '초당 공격 횟수: 1.42 (증가됨)', '--------',
+      '요구 사항:', '레벨: 62', '--------', '치명타 명중 확률 38% 증가', '모든 투사체 스킬 레벨 +3'
+    ].join('\n'));
+    // 원소 18-33 만 잡히고 카오스 5-9 는 무시돼야 한다
+    if (kr.pmin !== 52 || kr.emin !== 18 || kr.emax !== 33 || kr.cmin !== undefined
+        || kr.aps !== 1.42 || kr.crit !== 6.5 || kr.name !== '파멸의 노래') throw new Error('parse ko');
+    // 옵션 두 줄만 잡히고, 콜론 달린 요구 사항은 안 딸려와야 한다
+    if (kr.mods.length !== 2 || kr.mods[0] !== '치명타 명중 확률 38% 증가') throw new Error('parse mods');
+
+    // 깨진 환율(0 에 가까운 값)을 쓰면 그 화폐 매물이 공짜로 보인다 — 기본값으로 물러나야 한다
+    if (okRate(4e-7) || okRate(0) || okRate(-3) || okRate(NaN) || okRate(Infinity)
+        || okRate('300') || okRate(undefined)) throw new Error('okRate 통과하면 안 되는 값');
+    if (!okRate(1) || !okRate(300)) throw new Error('okRate 정상값');
+
+    // 응답 모양이 어떻든 freshRows 는 배열을 돌려줘야 한다 (던지면 목록만 지우고 실패한다)
+    if (freshRows({}).length || freshRows({ bows: '헐' }).length || freshRows(null).length
+        || freshRows({ bows: [null, 3, 'x'] }).length) throw new Error('freshRows 이상한 응답');
+    if (freshRows({ bows: [{ name: 'a' }, { name: 'b' }] }).length !== 2) throw new Error('freshRows 정상');
+    if (!freshRows({ bows: [{ name: 'a' }] })[0].t) throw new Error('freshRows 시각 도장');
+
+    // 목록을 다시 그린 뒤 포커스를 되돌리는 자리 — 되돌릴 게 없어도 조용히 넘어가야 한다
+    // (실제 동작 확인은 브라우저에서: 조건 화살표 4연속 이동, 삭제 3연속에 포커스 유지)
+    if (typeof focusChecked !== 'function') throw new Error('focusChecked 없음');
+    if (focusChecked() !== false) throw new Error('선택된 라디오가 없으면 false');
+
+    // 채집기가 건네준 저장값 — 모양이 어떻든 배열을 돌려주고 절대 던지지 않는다
+    if (harvestRows(null).length || harvestRows({}).length || harvestRows({ rows: '헐' }).length
+        || harvestRows({ rows: [null, 1, { name: 'id없음' }] }).length) throw new Error('harvestRows 잡값');
+    if (harvestRows({ rows: [{ id: 'a' }, { id: 'b' }] }).length !== 2) throw new Error('harvestRows 정상');
+    // mods 가 문자열이면 글자 단위로 쪼개져 조건 목록을 오염시킨다 — 배열이 아니면 비워야 한다
+    const hv1 = harvestRows({ rows: [{ id: 'a', mods: '가나다라마' }] })[0];
+    if (hv1.mods.length !== 0) throw new Error('harvestRows mods 문자열 방치');
+    const hv2 = harvestRows({ rows: [{ id: 'a', mods: ['정상 옵션', 7, null, '둘째'] }] })[0];
+    if (hv2.mods.length !== 2 || hv2.mods[0] !== '정상 옵션') throw new Error('harvestRows mods 잡원소');
+    if (harvestRows({ rows: [{ id: 123 }, { id: '' }] }).length) throw new Error('harvestRows id 타입');
+
+    // 축 눈금과 가격 칸이 같은 자릿수 규칙을 쓰는지 — 갈라지면 작은 값이 "0.00" 으로 뭉갠다
+    if (decimalsFor(0.0025) !== 4 || decimalsFor(0.25) !== 3 || decimalsFor(2.5) !== 2
+        || decimalsFor(25) !== 1 || decimalsFor(250) !== 0) throw new Error('decimalsFor');
+    if (tickLabel(0) !== '0') throw new Error('tickLabel 원점');          // 선형축 원점은 그냥 0
+    if (tickLabel(0.0025) !== '0.0025') throw new Error('tickLabel 소수'); // 로그축엔 0 이 없다
+    if (+tickLabel(0.0025) === 0) throw new Error('tickLabel 0 으로 뭉갬');
+
+    // 옛 수집본에는 conds 에 key 가 없다 — 라벨에서 열쇠를 만들어야 "측정"과 "표본"이 안 겹친다
+    if (condKey({ label: '치명타 확률 +2% 이상' }) !== '치명타 확률 #%') throw new Error('condKey 이상');
+    if (condKey({ label: '정확도 +100 이상' }) !== '정확도 #') throw new Error('condKey 정확도');
+    if (condKey({ label: '민첩 #' }) !== '민첩 #') throw new Error('condKey 이미 열쇠');
+    if (condKey({ key: '준 열쇠', label: '아무거나 +1 이상' }) !== '준 열쇠') throw new Error('condKey 우선');
+
+    // 값이 하나뿐인 옵션엔 문턱 막대를 안 만든다 (끌어도 결과가 같다)
+    const one = [{ offs: { x: 1 } }, { offs: { x: 1 } }, { offs: { x: 1 } }];
+    if (bar(one, 'x') !== '') throw new Error('bar 값 하나');
+    if (!bar([{ offs: { x: 1 } }, { offs: { x: 3 } }], 'x')) throw new Error('bar 값 여럿');
+  } catch (e) {
+    console.error(e);
+    $('fail').style.display = 'block';
+  }
+})();
+
+/* ---------- 미리 떠둔 스냅샷 ---------- */
+// 수집기(serve.py --collect)가 매시간 써두는 latest.json 을 열자마자 읽는다.
+// 있으면 따로 조회할 필요가 없고, 한 시점에서 통째로 뜬 것이라 시점이 섞일 수도 없다.
+async function loadSnapshot(){
+  try {
+    const r = await fetch('latest.json', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (!d.bows || !d.bows.length) return;
+    snapRates = d.rates || {};                          // 수집기가 떠온 환율을 같이 받는다
+    snapConds = d.conds || [];
+    if (!snapConds.some(c => c.label === pickedCond)) pickedCond = null;
+    bows = bows.filter(b => !b.snap)                    // 지난 스냅샷은 버리고 새것으로 갈아끼운다
+      .concat(d.bows.map(b => Object.assign({ snap: true, t: d.taken_at }, b)));
+    save(); refresh();
+    status(`미리 떠둔 시세 ${d.bows.length}개 · ${timeStr(d.taken_at)} 기준`);
+  } catch (e) { /* 스냅샷이 없으면 직접 불러오면 된다 */ }
+}
+
+$('unit').value = unit;
+refresh();
+loadSnapshot().then(() => {
+  const n = loadHarvest();
+  if (n) { save(); refresh(); status(`거래소에서 직접 주운 매물 ${n}개를 합쳐 보는 중 (채집기)`); }
+});
+</script>
