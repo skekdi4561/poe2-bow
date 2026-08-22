@@ -520,8 +520,9 @@ def pick_conditions(bows, cat):
         thr = threshold(sid, 0)
         if thr <= 0 or len(vals) < MIN_OBSERVED:
             continue        # 관측 1~2건으로 문턱값을 잡으면 그 한 건이 곧 조건이 된다
-        out.append({"id": sid, "label": key, "key": key, "min": thr,
-                    "n": len(vals), "why": "빈도"})
+        # 라벨의 "#" 를 문턱값으로 채운다 — "#% 증가" 같은 빈칸 라벨이 화면에 그대로 노출됐었다
+        out.append({"id": sid, "label": key.replace("#", "%g" % thr) + " 이상", "key": key,
+                    "min": thr, "n": len(vals), "why": "빈도"})
         used.add(sid)
         if len(out) >= COND_MODS:
             break
@@ -1299,6 +1300,13 @@ def demo():
 
     # collect() 의 securable 경고: 대역 resolve_search 가 securable 아님 -> 경고가 찍혀야 한다
     # (위 수집기 자체 검증의 대역이 이미 status 없는 질의문을 쓰므로, 경고 경로는 그 실행에서 돈다)
+
+    # 빈도 조건의 라벨은 빈칸(#)이 아니라 문턱값을 담아야 한다
+    _fb = [{"mods": ["[Companion|반려수]의 [Attack|공격] 속도 %d%% 증가" % v]}
+           for v in (12, 13, 14, 15, 16, 17)]
+    _got = [c for c in pick_conditions(_fb, {"반려수의 공격 속도 #% 증가": "explicit.stat_X"})
+            if c["why"] == "빈도"]
+    assert _got and "#" not in _got[0]["label"] and "이상" in _got[0]["label"], _got
 
     print("serve.py self-test PASS")
 

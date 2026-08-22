@@ -184,7 +184,9 @@ tr.front:hover td{background:var(--accent-soft)}
 .budgetbar{display:flex; gap:14px; align-items:center; margin:0 0 16px}
 .budgetbar input{flex:1}
 .budgetbar b{font-size:17px; color:var(--accent); white-space:nowrap; min-width:8ch; text-align:right}
-.oplist{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:2px}
+.oplist{list-style:none; padding:0 4px 0 0; margin:0; display:flex; flex-direction:column; gap:2px;
+  max-height:520px; overflow-y:auto; scrollbar-width:thin}
+.budgetbar button{flex:none; font-size:12px; padding:5px 10px; white-space:nowrap}
 .oplist li{display:grid; grid-template-columns:minmax(0,15rem) minmax(0,1fr) 5.5rem 5rem;
   gap:12px; align-items:center; padding:7px 10px; border-radius:6px; font-size:13px}
 .oplist li:hover{background:var(--surface-2)}
@@ -242,7 +244,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 </header>
 
 <div class="card">
-  <div class="loadbar">
+  <div class="loadbar" id="loadbar">
     <div>
       <label for="trade-url">거래소 검색 URL</label>
       <input id="trade-url" placeholder="https://poe.kakaogames.com/trade2/search/poe2/...">
@@ -264,6 +266,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
     <input type="range" id="budget" min="0" max="1000" value="500"
            aria-label="예산" aria-describedby="budget-val">
     <b id="budget-val">—</b>
+    <button id="budget-sort" title="정렬 뒤집기">DPS 높은 순</button>
   </div>
   <ul class="oplist" id="oplist"></ul>
 </div>
@@ -275,7 +278,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
         <h2>DPS 밖 옵션</h2>
         <span class="count" id="match-count"></span>
       </div>
-      <p class="hint" id="filters-hint">치명타·스킬 레벨처럼 거래소 DPS에 안 들어가는 옵션들입니다. 조건을 고르면 그 옵션만의 가격 곡선이 기준 곡선과 겹쳐 그려집니다.</p>
+      <p class="hint" id="filters-hint">치명타·스킬 레벨처럼 거래소 DPS에 안 들어가는 옵션들입니다. 조건을 고르면 그 옵션만의 가격 곡선이 기준 곡선과 겹쳐 그려집니다. 여러 개를 겹쳐 고르면 전부 만족하는 매물만 남습니다.</p>
       <div class="filters" id="filters"></div>
     </div>
     <div>
@@ -307,7 +310,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   </div>
   <p class="hint" id="filtered"></p>
   <div class="empty" id="empty">아직 등록된 활이 없습니다.</div>
-  <div class="actions"><button id="demo">예시 데이터 넣기</button><button id="wipe">전부 지우기</button></div>
+  
 </div>
 
 <div class="minor">
@@ -355,7 +358,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
       <div>
         <label for="unit">표시 화폐 <span class="src" id="unit-note"></span></label>
         <select id="unit">
-          <option value="auto">자동 (숫자가 작게 나오는 쪽)</option>
+          <option value="auto">자동 (1디바인부터 div 표기)</option>
           <option value="exalted">엑잘티드</option>
           <option value="divine">디바인</option>
           <option value="chaos">카오스</option>
@@ -404,7 +407,8 @@ let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 �
 // 검색이 id 를 100개까지만 주는데 그게 가격 오름차순이라, 비싼 옵션이 붙은 활은
 // 기본 표본에 아예 안 들어온다 — 로컬 필터로는 이 값을 만들 수 없다.
 let snapConds = [];      // [{id, label, min, why}]
-let pickedCond = null;   // 지금 보고 있는 조건 라벨 (null = 조건 없음)
+let pickedConds = new Set();   // 겹쳐 고른 조건 라벨들 (비어 있으면 조건 없음)
+let budgetDesc = true;         // 예산표 정렬 — DPS 높은 순이 기본
 let budgetPos = null;    // 예산 슬라이더 위치 (0~1000, null = 아직 안 건드림)
 let logYAxis = true;     // 세로축 로그 여부 — DOM 이 아니라 여기서 들고 있는다
 let localMin = 0;        // 로컬 분류 조건의 최소값 (측정 조건은 검색할 때 값이 정해져 못 바꾼다)
@@ -471,10 +475,17 @@ function toUnit(vEx){ const r = rateOf(activeUnit()) || 1; return vEx / r; }
 // 로그축엔 0 이 있을 수 없으니 없는 값을 가리키는 눈금이었다.
 const decimalsFor = v => { const a = Math.abs(v);
   return a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : a >= 0.1 ? 3 : 4; };
+// 자동 모드: 1 디바인어치를 넘는 값은 div 로 — "590,800 ex" 는 아무도 못 읽는다.
+// POE 관례 그대로(1딥 미만 ex, 이상 div). 화폐를 수동으로 고르면 그대로 따른다.
 function money(vEx){
-  const v = toUnit(vEx);
-  if (!isFinite(v)) return '—';
-  return fmt(v, decimalsFor(v)) + ' ' + (UNIT_LABEL[activeUnit()] || activeUnit());
+  if (!isFinite(vEx)) return '—';
+  let u = activeUnit();
+  if (unit === 'auto') {
+    const dv = rateOf('divine');
+    u = (okRate(dv) && dv > 1 && Math.abs(vEx) >= dv) ? 'divine' : 'exalted';
+  }
+  const v = vEx / (rateOf(u) || 1);
+  return fmt(v, decimalsFor(v)) + ' ' + (UNIT_LABEL[u] || u);
 }
 
 // 파레토 최전선: 자기보다 DPS가 높거나 같으면서 더 싼 활이 없는 것들
@@ -556,6 +567,20 @@ const modVal = m => { const n = m.match(/[\d.]+/); return n ? +n[0] : 0; };
 // "측정" 과 "표본" 두 줄로 나란히 나온다(실측: 조건 목록에 중복 4쌍).
 // 라벨은 "<문구> <값> 이상" 꼴이라 뒤의 "이상"만 떼면 일반 옵션 문구와 같아진다.
 const condKey = c => c.key || modKey(String(c.label).replace(/\s*이상\s*$/, ''));
+
+// 겹쳐 고른 조건들을 로컬 판정 술어로 바꾼다. 측정 조건은 자기 문턱값(min)을,
+// 표본 조건은 "그 옵션이 있기만 하면"을 쓴다. 측정 조건 두 개를 겹친 "그 조합"의
+// 검색 데이터는 없으므로, 겹칠 때는 항상 이 로컬 판정으로 떨어진다.
+function condPredicates(labels){
+  return labels.map(l => {
+    const c = snapConds.find(x => x.label === l);
+    return c ? { key: condKey(c), min: c.min } : { key: l, min: 0.0001 };
+  });
+}
+const meetsAll = (offs, preds) => preds.every(p => ((offs || {})[p.key] || 0) >= p.min);
+// 옛 수집본의 빈도 조건 라벨은 "#% 증가" 처럼 빈칸이다 — 표시할 때 문턱값으로 채운다.
+// 라벨 원본은 v.cond 매칭의 열쇠라 건드리지 않고, 보여주는 글자만 바꾼다.
+const condText = c => String(c.label).includes('#') ? String(c.label).replace('#', c.min) + ' 이상' : c.label;
 
 function offMods(b){                        // { 열쇠: 그 활이 가진 값 }
   const out = {};
@@ -709,16 +734,23 @@ function buildConds(){
   const base = partition().base.filter(v => !v.cond);
   const el = $('filters');
   const rows = [{ label: null, text: '조건 없음 (전체 최저가)', tag: '' }]
-    .concat(snapConds.map(c => ({ label: c.label, text: c.label, tag: '측정' })))
+    .concat(snapConds.map(c => ({ label: c.label, text: condText(c), tag: '측정' })))
     .concat(localConds(base).map(c => ({ label: c.label, text: c.label,
                                         tag: `표본 ${c.n}개`, local: true })));
-  el.innerHTML = rows.map(r => `
-    <label class="condrow ${r.label === pickedCond ? 'on' : ''}${r.local ? ' local' : ''}">
-      <input type="radio" name="cond" value="${esc(r.label == null ? '' : r.label)}"
-             ${r.label === pickedCond ? 'checked' : ''}>
+  // 데이터가 갱신돼 사라진 조건은 선택에서 걷어낸다 (유령 조건이 전부를 걸러버리는 것 방지)
+  const known = new Set(rows.map(r => r.label).filter(Boolean));
+  for (const l of [...pickedConds]) if (!known.has(l)) pickedConds.delete(l);
+  const one = pickedConds.size === 1 ? [...pickedConds][0] : null;
+  el.innerHTML = rows.map(r => {
+    const on = r.label == null ? pickedConds.size === 0 : pickedConds.has(r.label);
+    return `
+    <label class="condrow ${on ? 'on' : ''}${r.local ? ' local' : ''}">
+      <input type="checkbox" name="cond" value="${esc(r.label == null ? '' : r.label)}"
+             ${on ? 'checked' : ''}>
       <span>${esc(r.text)}</span>
       ${r.tag ? `<em>${esc(r.tag)}</em>` : ''}
-    </label>` + (r.label && r.label === pickedCond && r.local ? bar(base, r.label) : '')).join('');
+    </label>` + (r.label && r.label === one && r.local ? bar(base, r.label) : '');
+  }).join('');
 }
 
 // 표본에서 분류만 한 조건은 값도 다 갖고 있으니 문턱값을 자유롭게 끌 수 있다.
@@ -795,20 +827,24 @@ function refresh(){                         // 데이터가 바뀐 뒤엔 슬라
 
 $('filters').addEventListener('change', e => {
   if (e.target.name !== 'cond') return;
+  const val = e.target.value;
   const hadFocus = document.activeElement === e.target;
-  pickedCond = e.target.value || null;
+  if (!val) pickedConds.clear();                      // "조건 없음" = 전부 해제
+  else if (e.target.checked) pickedConds.add(val);
+  else pickedConds.delete(val);
   localMin = 0;                       // 조건을 바꾸면 문턱값은 초기화한다
   buildConds();
   // buildConds() 가 목록을 innerHTML 로 통째로 다시 그리므로 방금 고른 라디오가 문서에서
   // 사라진다. 그대로 두면 포커스가 body 로 날아가서, 키보드 사용자는 화살표로 목록을
   // 한 칸 움직인 뒤 더는 움직일 수 없다(실측: activeElement 가 BODY, 그 라디오는 문서 밖).
-  if (hadFocus) focusChecked();
+  if (hadFocus) focusCond(val);
   render();
 });
-// 다시 그린 목록에서 지금 선택된 라디오로 포커스를 되돌린다
-function focusChecked(){
+// 다시 그린 목록에서 방금 만진 체크박스로 포커스를 되돌린다 (키보드 사용자 갇힘 방지, 18회차)
+function focusCond(val){
   const box = $('filters');
-  const el = box && box.querySelector && box.querySelector('input[name=cond]:checked');
+  const esc2 = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(String(val)) : String(val);
+  const el = box && box.querySelector && box.querySelector(`input[name=cond][value="${esc2}"]`);
   if (el && el.focus) el.focus({ preventScroll: true });
   return !!el;
 }
@@ -852,15 +888,28 @@ function optionFronts(all){
   const out = [{ label: '조건 없음', kind: '', front: frontier(base) }];
   for (const c of snapConds) {
     const f = frontier(all.filter(v => v.cond === c.label));
-    if (f.length) out.push({ label: c.label, kind: '측정', front: f });
+    if (f.length) out.push({ label: condText(c), kind: '측정', front: f });
   }
   const measured = new Set(snapConds.map(c => condKey(c)));
   const cnt = new Map();
   for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
   for (const [k, n] of [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
     if (measured.has(k) || n < 3) continue;   // 표본 1~2개로는 곡선이라 부를 게 없다
-    const f = frontier(base.filter(v => (v.offs[k] || 0) > 0));
-    if (f.length) out.push({ label: k, kind: `표본 ${n}`, front: f });
+    // 롤(수치) 구간으로 세분화 — 관측된 분포의 사분위에서 문턱을 뽑는다.
+    // 게임 티어표 없이도 시장에 실제로 도는 굴림 구간이 그대로 계단이 된다.
+    const vals = base.map(v => v.offs[k]).filter(x => x > 0).sort((a, b) => a - b);
+    const ints = vals.every(Number.isInteger);
+    let thrs = new Set(vals).size >= 5
+      ? [...new Set([.25, .5, .75].map(q => {
+          const v = vals[Math.min(vals.length - 1, Math.floor(vals.length * q))];
+          return ints ? Math.round(v) : Math.round(v * 10) / 10;
+        }))]
+      : [vals[0]];
+    for (const thr of thrs) {
+      const sub = base.filter(v => (v.offs[k] || 0) >= thr);
+      const f = frontier(sub);
+      if (f.length) out.push({ label: shortMod(k, thr) + ' 이상', kind: `표본 ${sub.length}`, front: f });
+    }
   }
   return out;
 }
@@ -890,7 +939,7 @@ function renderBudget(all){
 
   const scored = rows.map(r => ({ ...r, dps: dpsAt(r.front, budget) }));
   const baseDps = scored[0].dps;
-  const rest = scored.slice(1).sort((a, b) => (b.dps || 0) - (a.dps || 0));
+  const rest = scored.slice(1).sort((a, b) => budgetDesc ? (b.dps || 0) - (a.dps || 0) : (a.dps || 0) - (b.dps || 0));
   const maxDps = Math.max(...scored.map(r => r.dps || 0), 1);
 
   $('oplist').innerHTML = [scored[0], ...rest].map((r, i) => {
@@ -914,6 +963,11 @@ $('budget').addEventListener('input', e => {
   budgetPos = +e.target.value;
   render();
 });
+$('budget-sort').addEventListener('click', () => {
+  budgetDesc = !budgetDesc;
+  $('budget-sort').textContent = budgetDesc ? 'DPS 높은 순' : 'DPS 낮은 순';
+  render();
+});
 
 function render(){
   $('crit-row').style.display = $('crit-on').checked ? '' : 'none';
@@ -925,11 +979,14 @@ function render(){
   const base = all;                 // 기준선 = 가진 매물 전부 (위 optionFronts 와 같은 정의)
   const measured = snapConds.length > 0;
   const meets = v => Object.entries(reqs).every(([k, min]) => (v.offs[k] || 0) >= min);
-  const isMeasured = pickedCond && snapConds.some(c => c.label === pickedCond);
-  const view = !pickedCond ? base
-    : isMeasured ? all.filter(v => v.cond === pickedCond)      // 검색으로 직접 잰 곡선
-                 : base.filter(v => (v.offs[pickedCond] || 0) >= Math.max(localMin, 0.0001));
-  const active = measured ? !!pickedCond : (pickedCond ? true : Object.keys(reqs).length > 0);
+  const sel = [...pickedConds];
+  const selMeasuredOne = sel.length === 1 && snapConds.some(c => c.label === sel[0]);
+  let view;
+  if (!sel.length) view = base;
+  else if (selMeasuredOne) view = all.filter(v => v.cond === sel[0]);   // 검색으로 직접 잰 곡선
+  else if (sel.length === 1) view = base.filter(v => (v.offs[sel[0]] || 0) >= Math.max(localMin, 0.0001));
+  else view = all.filter(v => meetsAll(v.offs, condPredicates(sel)));   // 겹친 조건 = 로컬 판정
+  const active = sel.length > 0 || Object.keys(reqs).length > 0;
 
   $('match-count').textContent = base.length
     ? (active ? `조건 ${view.length}점 / 기준 ${base.length}개` : `${base.length}개`) : '';
@@ -942,7 +999,7 @@ function render(){
 
   // 표시 화폐: 자동이면 이번 데이터에서 숫자가 가장 짧게 나오는 화폐를 고른다
   unitAuto = base.length ? pickUnit(Math.min(...base.map(b => b.p))) : 'exalted';
-  $('th-price').textContent = `가격 (${UNIT_LABEL[activeUnit()] || activeUnit()})`;
+  $('th-price').textContent = unit === 'auto' ? '가격' : `가격 (${UNIT_LABEL[activeUnit()] || activeUnit()})`;
   const lowest = base.length ? Math.min(...base.map(b => b.p)) : 0;
   $('unit-note').textContent = (lowest && toUnit(lowest) < 0.1)
     ? '싼 매물이 0에 가깝게 보입니다' : '';
@@ -989,7 +1046,7 @@ function render(){
     : '<li><span class="step">최전선에 활이 2개 이상 있어야 계단이 나옵니다.</span></li>';
 
   renderBudget(all);
-  premium(f, baseFront, active);
+  premium(f, baseFront, active, sel.length >= 2);
   freshness(base);
   chart(base, view, front, active ? baseFront : null);
 }
@@ -1041,7 +1098,8 @@ $('freshness').addEventListener('click', e => {
 });
 
 // 조건을 건 곡선이 기준 곡선보다 같은 DPS에서 얼마나 비싼가
-function premium(f, baseFront, active){
+function premium(f, baseFront, active, thin){
+  const THIN = ' <span class="sub">겹친 조건은 표본이 얇습니다 — 실제 시세는 이보다 비쌀 수 있습니다.</span>';
   const el = $('premium');
   if (!active) {
     el.className = 'premium none';
@@ -1078,12 +1136,14 @@ function premium(f, baseFront, active){
         + '다만 이 조건 때문에 더 싼 낮은 DPS 매물을 포기하고 있을 수 있으니 아래 표도 보세요.'
       : `조건에 맞는 활이 <strong>1개</strong>뿐입니다 — 같은 DPS 최저가보다 `
         + `<strong>+${money(abs)}</strong> 비쌉니다. 곡선을 그리려면 매물이 더 필요합니다.`;
+    if (thin) el.innerHTML += THIN;
     return;
   }
   el.innerHTML = abs <= 0.01
     ? '이 조건은 <strong>값을 거의 안 올립니다</strong> — 같은 DPS를 같은 가격에 살 수 있으니 걸어도 손해가 없습니다.'
     : `이 조건을 걸면 같은 DPS를 사는 데 <strong>+${money(abs)}</strong> `
       + `(약 <strong>+${fmt(pct, 0)}%</strong>) 더 듭니다.`;
+  if (thin) el.innerHTML += THIN;
 }
 
 const tickLabel = u => u === 0 ? '0' : fmt(u, decimalsFor(u));
@@ -1174,9 +1234,7 @@ $('rows').addEventListener('click', e => {
     if (left.length) left[Math.min(pos, left.length - 1)].focus({ preventScroll: true });
   }
 });
-$('wipe').addEventListener('click', () => {
-  if (confirm('등록한 활을 전부 지웁니다.')) { bows = []; reqs = {}; save(); refresh(); }
-});
+
 $('unit').addEventListener('change', e => {
   unit = e.target.value;
   try { localStorage.setItem('poe2unit', unit); } catch (err) {}
@@ -1192,16 +1250,7 @@ $('rate-rows').addEventListener('input', e => {
 $('rare-only').addEventListener('change', refresh);
 $('crit-on').addEventListener('change', render);
 $('crit-bonus').addEventListener('input', render);
-$('demo').addEventListener('click', () => {
-  bows = bows.concat(stamped([
-    { name: '입문용 희귀활',   aps: 1.30, crit: 5.0, pmin: 38, pmax: 72,  emin: 0,  emax: 0,  price: 1,  cur: 'divine', rarity: 'Rare', mods: [] },
-    { name: '중간 물리활',     aps: 1.38, crit: 6.5, pmin: 55, pmax: 104, emin: 0,  emax: 0,  price: 6,  cur: 'divine', rarity: 'Rare', mods: ['30% increased Critical Hit Chance'] },
-    { name: '하이브리드 듀얼', aps: 1.45, crit: 6.0, pmin: 48, pmax: 92,  emin: 22, emax: 41, price: 14, cur: 'divine', rarity: 'Rare', mods: ['+2 to Level of all Projectile Skills'] },
-    { name: '고급 크래프트',   aps: 1.52, crit: 7.0, pmin: 68, pmax: 128, emin: 0,  emax: 0,  price: 42, cur: 'divine', rarity: 'Rare', mods: ['52% increased Critical Hit Chance', '+4 to Level of all Projectile Skills'] },
-    { name: '바가지 매물',     aps: 1.35, crit: 6.0, pmin: 50, pmax: 95,  emin: 0,  emax: 0,  price: 30, cur: 'divine', rarity: 'Rare', mods: [] }
-  ]));
-  save(); refresh();
-});
+
 
 /* ---------- 거래소 불러오기 (로컬 실행기 serve.py 가 대신 조회) ---------- */
 const status = msg => { $('trade-status').textContent = msg; };
@@ -1211,12 +1260,10 @@ fetch('/api/ping')
     if (d.ok !== true) throw new Error('no proxy');
     if (!d.poesessid) status('POESESSID 미설정 — 거래소가 로그인을 요구하면 실행기를 껐다 다시 켜세요.');
   })
-  .catch(() => {                            // 아티팩트/파일로 열면 프록시가 없다 — 이유를 라벨에 밝힌다
-    $('trade-go').disabled = true;
-    $('trade-go').textContent = '실행기 필요';
-    $('trade-url').disabled = true;
-    status('거래소는 외부 사이트의 요청을 막아둬서(CORS), 자동 조회는 같은 폴더의 serve.py 를 '
-      + '실행했을 때만 됩니다: python serve.py — 그 전까진 아래 "직접 등록"으로 넣으세요.');
+  .catch(() => {
+    // 실행기가 없다 = 공개판 방문자다. "실행기 필요"로 잠겨만 있는 입력줄은 죽은 UI 라
+    // 아예 숨긴다. 실행기(serve.py)로 열면 /api/ping 이 성공해 이 줄이 그대로 보인다.
+    $('loadbar').style.display = 'none';
   });
 
 $('trade-go').addEventListener('click', async () => {
@@ -1356,8 +1403,32 @@ $('trade-go').addEventListener('click', async () => {
 
     // 목록을 다시 그린 뒤 포커스를 되돌리는 자리 — 되돌릴 게 없어도 조용히 넘어가야 한다
     // (실제 동작 확인은 브라우저에서: 조건 화살표 4연속 이동, 삭제 3연속에 포커스 유지)
-    if (typeof focusChecked !== 'function') throw new Error('focusChecked 없음');
-    if (focusChecked() !== false) throw new Error('선택된 라디오가 없으면 false');
+    if (typeof focusCond !== 'function') throw new Error('focusCond 없음');
+    if (focusCond('아무 조건') !== false) throw new Error('되돌릴 체크박스가 없으면 false');
+
+    // 자동 단위: 1 디바인어치부터는 div — money 를 쓰는 표·예산·계단·설명 전부에 적용
+    const kU = unit, kR = rates;
+    unit = 'auto'; rates = { divine: 400 };
+    if (money(5) !== '5.00 ex') throw new Error('auto ex: ' + money(5));
+    if (money(399) !== '399 ex') throw new Error('auto 경계 아래: ' + money(399));
+    if (money(400) !== '1.00 div') throw new Error('auto 경계: ' + money(400));
+    if (money(590800) !== '1,477 div') throw new Error('auto 큰 값: ' + money(590800));
+    unit = 'divine';
+    if (money(5) !== '0.0125 div') throw new Error('수동 선택은 그대로: ' + money(5));
+    unit = kU; rates = kR;
+
+    // 겹친 조건: 측정 조건은 자기 문턱값으로, 표본 조건은 보유 여부로 로컬 판정
+    const kSnap = snapConds;
+    snapConds = [{ label: '치명타 확률 +2% 이상', min: 2 }];
+    const prd = condPredicates(['치명타 확률 +2% 이상', '정확도 #']);
+    if (prd[0].key !== '치명타 확률 #%' || prd[0].min !== 2) throw new Error('측정 술어');
+    if (prd[1].key !== '정확도 #' || prd[1].min > 0.001) throw new Error('표본 술어');
+    if (!meetsAll({ '치명타 확률 #%': 3, '정확도 #': 50 }, prd)) throw new Error('둘 다 만족해야 통과');
+    if (meetsAll({ '치명타 확률 #%': 1, '정확도 #': 50 }, prd)) throw new Error('문턱 미달인데 통과');
+    if (meetsAll(null, prd)) throw new Error('offs 없음');
+    if (condText({ label: '민첩 #', min: 31 }) !== '민첩 31 이상') throw new Error('condText 빈칸 채움');
+    if (condText({ label: '치명타 확률 +2% 이상', min: 2 }) !== '치명타 확률 +2% 이상') throw new Error('condText 그대로');
+    snapConds = kSnap;
 
     // 채집기가 건네준 저장값 — 모양이 어떻든 배열을 돌려주고 절대 던지지 않는다
     if (harvestRows(null).length || harvestRows({}).length || harvestRows({ rows: '헐' }).length
@@ -1404,7 +1475,7 @@ async function loadSnapshot(){
     if (!d.bows || !d.bows.length) return;
     snapRates = d.rates || {};                          // 수집기가 떠온 환율을 같이 받는다
     snapConds = d.conds || [];
-    if (!snapConds.some(c => c.label === pickedCond)) pickedCond = null;
+    // 사라진 조건 라벨은 buildConds() 가 다시 그릴 때 선택에서 걷어낸다
     bows = bows.filter(b => !b.snap)                    // 지난 스냅샷은 버리고 새것으로 갈아끼운다
       .concat(d.bows.map(b => Object.assign({ snap: true, t: d.taken_at }, b)));
     save(); refresh();
