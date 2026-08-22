@@ -878,7 +878,9 @@ def rate_memory(hours=48):
             for (raw,) in con.execute(
                     "SELECT rates FROM snapshots WHERE taken_at >= ? ORDER BY id DESC", (cut,)):
                 for c, v in (json.loads(raw or "{}")).items():
-                    r = (v.get("rate") if isinstance(v, dict) else v) or 0
+                    # 기억은 관측 원본(obs)으로 만든다 — 거부돼 유지된 값이 아니라 실제로 본 값.
+                    # 그래야 시세가 진짜로 움직였을 때 두세 번 관측이면 중앙값이 따라간다.
+                    r = (v.get("obs", v.get("rate")) if isinstance(v, dict) else v) or 0
                     if isinstance(r, (int, float)) and r >= 1 and len(seen.setdefault(c, [])) < 3:
                         seen[c].append(r)
     except Exception:
@@ -898,9 +900,14 @@ def guard_rates(measured, memory):
         r = (got.get("rate") if isinstance(got, dict) else got) if got else None
         if r is None:
             out[c] = {"rate": m, "how": "이전 수집분"}
-        elif r < m / 3.0:
-            print("     %s 환율 %g 는 기억(%g)의 1/3 미만 — 독버섯 의심, 이전 값 유지" % (c, r, m))
-            out[c] = {"rate": m, "how": "급변 의심, 이전 값 유지 (관측 %g)" % r}
+        elif r < m / 3.0 or r > m * 3.0:
+            # 아래쪽 = "싸게 파는 척" 미끼(실사고: 디바인 10엑잘), 위쪽 = 매물 1건짜리
+            # 바가지 호가(실사고: 소멸 5000엑잘). 관측 원본(obs)은 남겨서 진짜 시세 변동이면
+            # 다음 수집들의 중앙값이 따라가게 한다 — 거부가 교착이 되지 않는 장치.
+            print("     %s 환율 %g 는 기억(%g)의 3배 밖 — 독버섯 의심, 이전 값 유지" % (c, r, m))
+            out[c] = {"rate": m, "how": "급변 의심, 이전 값 유지 (관측 %g)" % r, "obs": r}
+        elif isinstance(got, dict):
+            got["obs"] = r
     return out
 
 
@@ -1533,8 +1540,10 @@ def demo():
     assert _g2["divine"]["rate"] == 400 and "급변 의심" in _g2["divine"]["how"], _g2
     _g3 = guard_rates({"divine": {"rate": 350}}, _mem)         # 정상 변동은 관측이 이긴다
     assert _g3["divine"]["rate"] == 350
-    _g4 = guard_rates({"divine": {"rate": 900}}, _mem)         # 위쪽은 min 집계가 지키므로 통과
-    assert _g4["divine"]["rate"] == 900
+    _g4 = guard_rates({"divine": {"rate": 900}}, _mem)         # 3배 안쪽 상승은 정상 변동
+    assert _g4["divine"]["rate"] == 900 and _g4["divine"]["obs"] == 900
+    _g5 = guard_rates({"annul": {"rate": 5000}}, {"annul": 150.0})   # 00:37 실사고 — 위쪽 독버섯
+    assert _g5["annul"]["rate"] == 150 and _g5["annul"]["obs"] == 5000, _g5
 
     # rate_memory: 독버섯이 낀 이력에서 중앙값이 진짜 값을 살려내는지 (임시 DB)
     keep_db3 = DB
@@ -1542,12 +1551,12 @@ def demo():
     try:
         now_ms = int(time.time() * 1000)
         with db() as con:
-            for i, r in enumerate(({"divine": {"rate": 10}},      # 최신 = 독버섯
+            for i, r in enumerate(({"divine": {"rate": 300, "obs": 10}},   # 거부됐지만 관측은 10
                                     {"divine": {"rate": 400}},
                                     {"divine": {"rate": 300}})):
                 con.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
                             (now_ms - i * 3600000, "u", json.dumps(r)))
-        assert rate_memory()["divine"] == 300, rate_memory()   # [10,400,300] 의 중앙값
+        assert rate_memory()["divine"] == 300, rate_memory()   # 관측 [10,400,300] 의 중앙값
     finally:
         DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
 
