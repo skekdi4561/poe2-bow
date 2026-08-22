@@ -409,6 +409,7 @@ let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 �
 let snapConds = [];      // [{id, label, min, why}]
 let pickedConds = new Set();   // 겹쳐 고른 조건 라벨들 (비어 있으면 조건 없음)
 let budgetDesc = true;         // 예산표 정렬 — DPS 높은 순이 기본
+let dataRev = 0;               // 데이터 판 번호 — 예산표 곡선 캐시 무효화용
 let budgetPos = null;    // 예산 슬라이더 위치 (0~1000, null = 아직 안 건드림)
 let logYAxis = true;     // 세로축 로그 여부 — DOM 이 아니라 여기서 들고 있는다
 let localMin = 0;        // 로컬 분류 조건의 최소값 (측정 조건은 검색할 때 값이 정해져 못 바꾼다)
@@ -819,6 +820,7 @@ $('filters').addEventListener('input', e => {
 
 /* ---------- 렌더 ---------- */
 function refresh(){                         // 데이터가 바뀐 뒤엔 슬라이더·환율칸까지 다시 만든다
+  dataRev++;
   buildRates();
   // 수집기가 실제로 재온 조건이 있으면 그걸 쓴다. 슬라이더는 그런 데이터가 없을 때
   // (직접 등록만 있을 때)의 대비책 — 측정값이 있는데 추정으로 덮을 이유가 없다.
@@ -940,8 +942,13 @@ function posToBudget(pos, r){
   return r.lo * Math.pow(r.hi / r.lo, t);
 }
 
+let _fronts = { key: '', rows: null };
 function renderBudget(all){
-  const rows = optionFronts(all);
+  // 옵션별 최전선은 예산 슬라이더와 무관 — 데이터·기준이 같으면 재계산하지 않는다
+  const key = [dataRev, $('metric').value, $('crit-on').checked, $('crit-bonus').value,
+               $('rare-only').checked, all.length].join('|');
+  if (_fronts.key !== key) _fronts = { key, rows: optionFronts(all) };
+  const rows = _fronts.rows;
   const range = budgetRange(rows);
   const card = $('budget-card');
   if (!range || rows.length < 2) { card.style.display = 'none'; return; }
@@ -1091,6 +1098,7 @@ function freshness(base){
 
   up.style.display = '';
   up.innerHTML = `<strong>${esc(agoStr(hi))}</strong> 기준 시세 · ${esc(timeStr(hi))} · 기준 매물 ${base.length}개`;
+  if (hi - lo > 2 * 3600 * 1000) up.innerHTML += ' <span class="sub">· 최근 24시간 관측 합집합</span>';
 
   if ((hi - lo) / DAY > 2 || unknown) {
     el.className = 'freshness warn';

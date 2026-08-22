@@ -230,6 +230,7 @@ def normalize(res):
         return None                                    # 활이 아니거나 GGG가 DPS를 안 준 항목
     name = " ".join(x for x in (item.get("name"), item.get("typeLine") or item.get("baseType")) if x)
     return {
+        "id": str(res.get("id") or ""),
         "name": name.strip() or "이름 없음",
         "pdps": round(pdps or 0, 1),
         "edps": round(edps or 0, 1),
@@ -765,6 +766,8 @@ def db():
         con.execute("ALTER TABLE snapshots ADD COLUMN rates TEXT")
     if "cond" not in {r[1] for r in con.execute("PRAGMA table_info(bows)")}:
         con.execute("ALTER TABLE bows ADD COLUMN cond TEXT")
+    if "id" not in {r[1] for r in con.execute("PRAGMA table_info(bows)")}:
+        con.execute("ALTER TABLE bows ADD COLUMN id TEXT")   # 거래소 매물 id — 합집합 중복 제거용
     return con
 
 
@@ -804,6 +807,39 @@ def write_latest(payload, path=None):
     raise err
 
 
+def recent_rows(hours=24):
+    """최근 N시간 스냅샷의 합집합. 같은 매물(id)은 가장 최근 관측만 남긴다.
+
+    스냅샷 한 장은 밴드당 최저가 표본이라 얇다(실측 ~160개). 시간마다 수집하면
+    표본이 계속 갈리는데, 페이지가 매물마다 수집 시각(t)으로 24시간 만료를 걸므로
+    24시간 창의 합집합을 내보내면 두꺼우면서도 신선한 통계가 된다(실측 추정 500~900개).
+    id 가 없는 옛 스냅샷 행은 겹침 판정을 못 하므로 최신 스냅샷 것만 쓴다.
+    """
+    cut = int((time.time() - hours * 3600) * 1000)
+    with db() as con:
+        row = con.execute("SELECT id FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        latest_snap = row[0] if row else -1
+        rows = con.execute(
+            "SELECT b.id, b.snapshot_id, s.taken_at, b.name, b.pdps, b.edps, b.aps, b.crit,"
+            " b.price, b.cur, b.rarity, b.mods, b.cond FROM bows b"
+            " JOIN snapshots s ON s.id = b.snapshot_id WHERE s.taken_at >= ?"
+            " ORDER BY s.taken_at DESC, b.rowid ASC", (cut,)).fetchall()
+    out, seen = [], set()
+    for lid, sid, taken, name, pdps, edps, aps, crit, price, cur, rarity, mods, cond in rows:
+        if lid:
+            if lid in seen:
+                continue                     # 같은 매물 재관측 — 더 최근 것이 이미 들어갔다
+            seen.add(lid)
+        elif sid != latest_snap:
+            continue                         # id 없는 옛 행은 최신 스냅샷 것만
+        out.append({"id": lid or "", "name": name, "pdps": pdps, "edps": edps, "aps": aps,
+                    "crit": crit, "price": price, "cur": cur, "rarity": rarity,
+                    "mods": json.loads(mods or "[]"), "cond": cond, "t": taken})
+        if len(out) >= 2000:                 # 페이지 frontier 가 O(n²) — 2000개 288ms 실측 상한
+            break
+    return out
+
+
 def collect(url, limit=100):
     """한 시점의 시세를 통째로 뜬다. 스냅샷 하나 = 한 시점 = 시점이 섞일 수 없다."""
     taken = int(time.time() * 1000)
@@ -838,16 +874,17 @@ def collect(url, limit=100):
             "INSERT INTO snapshots(taken_at, source_url, total, kept, rates) VALUES (?,?,?,?,?)",
             (taken, url, total, len(bows), json.dumps(rates, ensure_ascii=False))).lastrowid
         con.executemany(
-            "INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,mods,cond) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,mods,cond,id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [(sid, b["name"], b["pdps"], b["edps"], b["aps"], b["crit"],
               b["price"], b["cur"], b["rarity"], json.dumps(b["mods"], ensure_ascii=False),
-              b.get("cond")) for b in bows])
-    # 페이지는 최신 한 장만 읽는다. 과거는 DB 에만 쌓인다.
+              b.get("cond"), b.get("id")) for b in bows])
+    # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
+    merged = recent_rows()
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
-                  "rates": rates, "conds": conds, "bows": bows})
-    print("[%s] %d개 저장 (검색 결과 %d, 제외 %d) → latest.json"
-          % (time.strftime("%H:%M:%S"), len(bows), total, skipped))
+                  "rates": rates, "conds": conds, "bows": merged})
+    print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → latest.json"
+          % (time.strftime("%H:%M:%S"), len(bows), len(merged), total, skipped))
     for name, b in RATE_STATE.items():
         if b.get("state"):
             print("     레이트 리밋 %-12s %s / 한도 %s" % (name, b["state"], b.get("rules")))
@@ -1307,6 +1344,33 @@ def demo():
     _got = [c for c in pick_conditions(_fb, {"반려수의 공격 속도 #% 증가": "explicit.stat_X"})
             if c["why"] == "빈도"]
     assert _got and "#" not in _got[0]["label"] and "이상" in _got[0]["label"], _got
+
+    # 24시간 합집합: 같은 id 는 최신 관측만, 창 밖은 잘리고, id 없는 행은 최신 스냅샷만
+    keep_db2 = DB
+    d2 = tempfile.mkdtemp()
+    DB = os.path.join(d2, "u.db")
+    try:
+        now_ms = int(time.time() * 1000)
+        with db() as con:
+            ins_s = "INSERT INTO snapshots(taken_at,source_url) VALUES (?,?)"
+            s_old = con.execute(ins_s, (now_ms - 30 * 3600 * 1000, "u")).lastrowid
+            s_a = con.execute(ins_s, (now_ms - 3600 * 1000, "u")).lastrowid
+            s_b = con.execute(ins_s, (now_ms, "u")).lastrowid
+            ins_b = ("INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,"
+                     "mods,cond,id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+            con.execute(ins_b, (s_old, "옛활", 1, 0, 1, 1, 1, "divine", "Rare", "[]", None, "X"))
+            con.execute(ins_b, (s_a, "지난시간활", 100, 0, 1, 1, 5, "divine", "Rare", "[]", None, "A"))
+            con.execute(ins_b, (s_a, "그때만본활", 200, 0, 1, 1, 9, "divine", "Rare", "[]", None, "B"))
+            con.execute(ins_b, (s_b, "재관측활", 100, 0, 1, 1, 4, "divine", "Rare", "[]", None, "A"))
+            con.execute(ins_b, (s_b, "id없는활", 1, 0, 1, 1, 1, "divine", "Rare", "[]", None, ""))
+        names = [r["name"] for r in recent_rows(24)]
+        assert "옛활" not in names, names                          # 24시간 밖은 잘린다
+        assert "재관측활" in names and "지난시간활" not in names, names   # 같은 id 는 최신만
+        assert "그때만본활" in names and "id없는활" in names, names       # 합집합 + 최신 무id 유지
+        assert all(isinstance(r["t"], int) for r in recent_rows(24))   # 매물마다 자기 시각
+    finally:
+        DB = keep_db2
+        shutil.rmtree(d2, ignore_errors=True)
 
     print("serve.py self-test PASS")
 
