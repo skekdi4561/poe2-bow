@@ -7,3 +7,4 @@ build/
 dist/
 *.spec
 감정소데이터/
+collector*.log
