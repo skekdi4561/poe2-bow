@@ -2,3 +2,8 @@
 snapshots.db
 __pycache__/
 *.tmp
+# exe 빌드 산출물
+build/
+dist/
+*.spec
+감정소데이터/

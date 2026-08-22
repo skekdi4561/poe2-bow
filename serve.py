@@ -9,7 +9,7 @@
     Windows PowerShell:  $env:POESESSID="..."; python serve.py
 쿠키값은 이 스크립트만 읽고 페이지로는 절대 안 내려간다.
 """
-import json, os, re, sqlite3, sys, threading, time, urllib.error, urllib.request, webbrowser
+import json, os, re, shutil, sqlite3, sys, threading, time, urllib.error, urllib.request, webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from statistics import median
@@ -24,7 +24,23 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 PORT = int(os.environ.get("PORT", 8731))
-ROOT = os.path.dirname(os.path.abspath(__file__))
+def _resolve_root():
+    """스크립트로 돌면 소스 폴더가 곧 작업 폴더다. exe(PyInstaller)로 돌면 자산은
+    임시 폴더에 풀리고 exe 옆 폴더가 데이터 자리다 — 임시 폴더에 DB 를 쓰면
+    재시작마다 증발하므로, 자산을 데이터 폴더로 복사해 그곳을 ROOT 로 쓴다."""
+    if not getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(__file__))
+    data = os.path.join(os.path.dirname(sys.executable), "감정소데이터")
+    os.makedirs(data, exist_ok=True)
+    bundle = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    for name in ("index.html", "poe2-bow-harvester.user.js", "og.png", "favicon.png", "favicon.ico"):
+        src = os.path.join(bundle, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(data, name))   # 프로그램을 업데이트하면 자산도 새것으로
+    return data
+
+
+ROOT = _resolve_root()
 UA = "poe2-bow-appraiser/1.0 (personal price-efficiency tool; low volume)"
 
 # 아무 URL이나 대신 열어주면 로컬 프록시가 SSRF 통로가 된다 — 거래소 호스트만 허용
@@ -902,6 +918,24 @@ def collect(url, limit=100):
     return len(bows)
 
 
+def bootstrap_latest():
+    """갓 설치한 프로그램도 열자마자 곡선이 보이게 — 시세가 없을 때만 공개 사이트에서 받아온다.
+    거래소가 아니라 우리 사이트(github.io)를 부르는 것이라 레이트 리밋과 무관하다."""
+    if os.path.exists(LATEST):
+        return
+    try:
+        req = urllib.request.Request("https://skekdi4561.github.io/poe2-bow/latest.json",
+                                     headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = r.read()
+        json.loads(data.decode("utf-8"))                 # 깨진 응답이면 여기서 던져 저장 안 함
+        with open(LATEST, "wb") as f:
+            f.write(data)
+        print("공유 시세를 받아왔습니다 (사이트 최신 스냅샷)")
+    except Exception as e:
+        print("공유 시세 받기 실패(무시하고 계속): %s" % e)
+
+
 def push_latest(cwd=None):
     """--push: 수집 뒤 latest.json 을 저장소로 밀어 올린다 = 공개 페이지 갱신.
     실패해도 수집은 계속 돈다 — 푸시는 배포일 뿐 수집이 아니다."""
@@ -1391,6 +1425,18 @@ def demo():
         DB = keep_db2
         shutil.rmtree(d2, ignore_errors=True)
 
+    # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다
+    keepL2 = LATEST
+    d3 = tempfile.mkdtemp()
+    try:
+        globals()["LATEST"] = os.path.join(d3, "l.json")
+        open(LATEST, "w").write("{}")
+        bootstrap_latest()                     # 존재 -> 즉시 반환 (여기서 요청이 나가면 안 된다)
+        assert open(LATEST).read() == "{}"
+    finally:
+        globals()["LATEST"] = keepL2
+        shutil.rmtree(d3, ignore_errors=True)
+
     print("serve.py self-test PASS")
 
 
@@ -1426,5 +1472,7 @@ if __name__ == "__main__":
     print("활 시세 감정소 → %s   (Ctrl+C 로 종료)" % url)
     if not os.environ.get("POESESSID"):
         print("참고: POESESSID 미설정 — 거래소가 로그인을 요구하면 위 파일 맨 위 설명을 보세요.")
-    webbrowser.open(url)
+    bootstrap_latest()
+    if "--nobrowser" not in sys.argv:
+        webbrowser.open(url)
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
