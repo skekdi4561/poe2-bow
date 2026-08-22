@@ -658,7 +658,7 @@ def load_trade(page_url, limit):
 
 # 페이지가 실제로 필요한 파일만 내보낸다. 폴더를 통째로 열면 snapshots.db 나
 # 나중에 누가 여기 둘 파일까지 브라우저로 새어 나간다.
-SERVED = {"/", "/index.html", "/latest.json", "/favicon.ico",
+SERVED = {"/", "/index.html", "/latest.json", "/favicon.ico", "/favicon.png", "/og.png",
           "/poe2-bow-harvester.user.js"}   # 채집기 설치 링크용 (Tampermonkey 가 .user.js 를 감지)
 
 
