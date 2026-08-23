@@ -1,0 +1,9 @@
+name = "poe2-bow-harvest"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "poe2-bow-harvest"
+# database_id 는 `npx wrangler d1 create poe2-bow-harvest` 실행 후 채운다
+database_id = "PLACEHOLDER"

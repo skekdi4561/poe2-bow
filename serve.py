@@ -798,6 +798,70 @@ def last_url():
     return row[0] if row else None
 
 
+# 크라우드 수집 수합 서버 (오버레이 앱 사용자들의 검색 응답에서 나온 활 매물).
+# 빈 문자열이면 합류 기능이 통째로 꺼진다.
+HARVEST_URL = "https://poe2-bow-harvest.skekdi4561.workers.dev"
+
+
+def merge_harvest(merged, rows=None):
+    """크라우드 수집 행을 24시간 합집합에 합류시킨다.
+
+    오버레이 앱(poe2-appraiser)은 사용자가 스스로 한 활 가격 검색의 응답을
+    익명으로 수합 서버에 올린다 — 추가 API 호출 없이 표본이 사용자 수에 비례해 는다.
+    즉시구매 수수료(fee)가 관측된 행만 신뢰한다: 협상용 낚시 가격이 최전선을
+    끌어내리는 오염을 막기 위해서다(환율 min 오염 사고와 같은 교훈).
+    서버가 죽어 있어도 수집은 계속되어야 하므로 실패는 조용히 건너뛴다.
+    """
+    if rows is None:
+        if not HARVEST_URL:
+            return merged
+        try:
+            req = urllib.request.Request(HARVEST_URL + "/recent",
+                                         headers={"User-Agent": "poe2-bow-collector"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                rows = (json.load(r) or {}).get("rows") or []
+        except Exception as e:
+            print("     크라우드 수집 합류 건너뜀: %s: %s" % (type(e).__name__, e))
+            return merged
+    cut = int((time.time() - 24 * 3600) * 1000)
+
+    def fp(r):
+        return (r.get("cond"), r.get("name"), r.get("pdps"), r.get("edps"),
+                r.get("aps"), r.get("crit"),
+                json.dumps(r.get("mods") or [], ensure_ascii=False))
+
+    seen = {(r.get("cond"), r["id"]) for r in merged if r.get("id")}
+    fps = {fp(r) for r in merged}
+    added = 0
+    for r in rows:
+        if not isinstance(r, dict) or r.get("fee") is None:
+            continue                     # 즉시구매 표시가 없는 행은 미검증 — 안 섞는다
+        t = r.get("t") or 0
+        if not isinstance(t, (int, float)) or t < cut:
+            continue
+        row = {"id": str(r.get("id") or ""), "name": str(r.get("name") or ""),
+               "pdps": r.get("pdps") or 0, "edps": r.get("edps") or 0,
+               "aps": r.get("aps") or 0, "crit": r.get("crit") or 0,
+               "price": r.get("price") or 0, "cur": r.get("cur") or "",
+               "rarity": r.get("rarity") or "", "mods": r.get("mods") or [],
+               "cond": None, "t": int(t), "src": "user"}
+        if row["price"] <= 0 or row["cur"] not in TRADE_CURRENCIES:
+            continue
+        if row["id"] and (None, row["id"]) in seen:
+            continue                     # 내 수집기가 이미 본 매물 — 중복
+        if fp(row) in fps:
+            continue                     # 재등록(새 id, 같은 롤) — 지문으로 잡는다
+        seen.add((None, row["id"]))
+        fps.add(fp(row))
+        merged.append(row)
+        added += 1
+        if len(merged) >= 5000:          # 표본 목표 상한 — frontier O(n log n)이라 여유
+            break
+    if added:
+        print("     크라우드 수집 합류 +%d개 (합계 %d개)" % (added, len(merged)))
+    return merged
+
+
 def write_latest(payload, path=None):
     """옆에 새로 쓰고 성공했을 때만 갈아끼운다.
 
@@ -956,7 +1020,7 @@ def collect(url, limit=100):
               b["price"], b["cur"], b["rarity"], json.dumps(b["mods"], ensure_ascii=False),
               b.get("cond"), b.get("id")) for b in bows])
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
-    merged = recent_rows()
+    merged = merge_harvest(recent_rows())
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
                   "rates": rates, "conds": conds, "bows": merged})
     print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → latest.json"
@@ -1478,6 +1542,34 @@ def demo():
     finally:
         DB = keep_db2
         shutil.rmtree(d2, ignore_errors=True)
+
+    # 크라우드 수집 합류: fee 없는 행·24h 밖·중복 id·같은 지문·이상 화폐는 안 섞인다
+    _now = int(time.time() * 1000)
+    _base = [{"id": "A", "name": "내활", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
+              "price": 5, "cur": "divine", "rarity": "Rare", "mods": ["옵션 +1"],
+              "cond": None, "t": _now}]
+    _rows = [
+        {"id": "B", "name": "유저활", "pdps": 200, "edps": 0, "aps": 1, "crit": 1,
+         "price": 9, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 100, "t": _now},
+        {"id": "C", "name": "낚시활", "pdps": 900, "edps": 0, "aps": 1, "crit": 1,
+         "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "t": _now},          # fee 없음
+        {"id": "D", "name": "옛활", "pdps": 300, "edps": 0, "aps": 1, "crit": 1,
+         "price": 9, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1,
+         "t": _now - 30 * 3600 * 1000},                                                  # 24h 밖
+        {"id": "A", "name": "내활", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
+         "price": 4, "cur": "divine", "rarity": "Rare", "mods": ["옵션 +1"],
+         "fee": 1, "t": _now},                                                           # 같은 id
+        {"id": "E", "name": "내활", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
+         "price": 4, "cur": "divine", "rarity": "Rare", "mods": ["옵션 +1"],
+         "fee": 1, "t": _now},                                                           # 같은 지문
+        {"id": "F", "name": "이상화폐", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
+         "price": 9, "cur": "mirror", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},
+    ]
+    _m = merge_harvest(list(_base), rows=_rows)
+    _names = [r["name"] for r in _m]
+    assert _names == ["내활", "유저활"], _names
+    assert [r for r in _m if r["name"] == "유저활"][0]["src"] == "user"
+    assert merge_harvest(list(_base), rows=[]) == _base            # 빈 응답은 무변화
 
     # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다
     keepL2 = LATEST
