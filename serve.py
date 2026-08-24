@@ -1692,6 +1692,38 @@ def demo():
     merge_harvest(list(_base), rows=_pricier, verifier=lambda r: (_calls2.append(1), True)[1])
     assert _calls2 == []                       # 최전선을 안 바꾸면 검증 호출 자체가 없다
 
+    # 진위 검증자(make_harvest_verifier)의 레이트 리밋 안전 속성 — 사용자 최우선 제약
+    # "자는 동안 레이트 리밋 금지"를 지키는 코드라 회귀 테스트로 못박는다.
+    _keep = (throttle, search_min_dps, fetch_ids)
+    try:
+        _net = {"search": 0}
+        globals()["throttle"] = lambda bk, mw=None: None
+        def _fs(base, lp, q, lo):
+            _net["search"] += 1
+            return {"id": "Q", "result": ["EXISTS"]}
+        def _ff(base, qid, ids):
+            return [{"price": 1.0, "cur": "divine"}] if ids == ["EXISTS"] else []
+        globals()["search_min_dps"] = _fs
+        globals()["fetch_ids"] = _ff
+        _HARVEST_VERDICTS.clear()
+        _v = make_harvest_verifier("b", "/l", {}, budget=8)
+        _res = [_v({"id": "r%d" % i, "pdps": 100, "edps": 0, "price": 1, "cur": "divine"})
+                for i in range(10)]
+        assert _net["search"] == 8, _net              # 예산 8회 초과 네트워크 금지
+        assert _res[8] is False and _res[9] is False  # 예산 초과분은 미확인 처리
+        _before = _net["search"]
+        _v({"id": "r0", "pdps": 100, "edps": 0, "price": 1, "cur": "divine"})
+        assert _net["search"] == _before              # 캐시된 id 는 네트워크 0
+        _HARVEST_VERDICTS.clear()
+        _v2 = make_harvest_verifier("b", "/l", {}, budget=8)
+        assert _v2({"id": "EXISTS", "pdps": 100, "edps": 0, "price": 1.0, "cur": "divine"}) is True
+        _HARVEST_VERDICTS.clear()
+        _v3 = make_harvest_verifier("b", "/l", {}, budget=8)
+        assert _v3({"id": "EXISTS", "pdps": 100, "edps": 0, "price": 99, "cur": "divine"}) is False
+    finally:
+        globals()["throttle"], globals()["search_min_dps"], globals()["fetch_ids"] = _keep
+        _HARVEST_VERDICTS.clear()
+
     # 문자열 가격 등 형 변조 행은 조용히 걸러진다 (수집 루프를 죽이면 안 된다)
     _bad = [{"id": "S", "name": "형변조", "pdps": "100", "edps": 0, "aps": 1, "crit": 1,
              "price": "3", "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},
