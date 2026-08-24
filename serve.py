@@ -2019,6 +2019,15 @@ def demo():
         # 앵커 900 은 s1·s2 둘 다 매물 없음 → floors 비어 그 스냅샷 제외
         _tr2 = build_trend(anchors=[900])
         assert _tr2["points"] == [], _tr2
+        # 오염 방어: rate 없는 통화(annul) 매물은 price*0=0 가짜 최저가를 만들면 안 된다.
+        # 그 스냅샷은 통째로 제외돼야 한다(가드 제거 시 floor 0 인 3번째 점이 생겨 두 단언 다 실패).
+        with db() as _c:
+            _s3 = _c.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                             (_now + 3600000, "u", json.dumps({"divine": {"rate": 300}}))).lastrowid
+            _c.execute(_ib, (_s3, 700, 0, 5, "annul", "Rare"))   # annul = rates 에 없음
+        _tr3 = build_trend(anchors=[700])
+        assert all(p["floors"].get("700", 1) != 0 for p in _tr3["points"]), _tr3  # 0-floor 오염 없음
+        assert len(_tr3["points"]) == 2, _tr3                                     # annul 전용 s3 제외
     finally:
         DB = _keep_bt; shutil.rmtree(_td, ignore_errors=True)
 
