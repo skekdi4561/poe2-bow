@@ -70,12 +70,25 @@ export default {
         .map(validRow)
         .filter(Boolean);
       const now = Date.now();
+      // 쓰기 절약 + 쓰기 소진 공격 완화: 이미 저장된 매물 id 는 쓰기 전에 걸러낸다.
+      // (읽기는 하루 500만 행 무료라 사실상 공짜, 쓰기는 10만 행 한도가 병목)
+      let fresh = rows;
+      if (rows.length) {
+        const marks = rows.map((_, i) => "?" + (i + 1)).join(",");
+        const { results } = await env.DB.prepare(
+          "SELECT lid FROM harvest WHERE lid IN (" + marks + ")",
+        )
+          .bind(...rows.map((r) => r.id))
+          .all();
+        const known = new Set(results.map((r) => r.lid));
+        fresh = rows.filter((r) => !known.has(r.id));
+      }
       const stmt = env.DB.prepare(
         "INSERT OR IGNORE INTO harvest(lid, t, fee, row) VALUES (?1, ?2, ?3, ?4)",
       );
-      if (rows.length) {
+      if (fresh.length) {
         await env.DB.batch(
-          rows.map((r) => stmt.bind(r.id, now, r.fee, JSON.stringify(r))),
+          fresh.map((r) => stmt.bind(r.id, now, r.fee, JSON.stringify(r))),
         );
       }
       // ponytail: 요청 2% 확률로 이틀 지난 행 청소 — 전용 cron 은 필요해지면
@@ -84,7 +97,7 @@ export default {
           .bind(now - 48 * 3600 * 1000)
           .run();
       }
-      return json({ ok: true, accepted: rows.length });
+      return json({ ok: true, accepted: rows.length, written: fresh.length });
     }
 
     if (req.method === "GET" && url.pathname === "/recent") {

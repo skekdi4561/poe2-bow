@@ -617,7 +617,10 @@ def load_banded(page_url, per_band):
     for lo in THRESHOLDS:
         throttle("search")
         r = search_min_dps(base, league_path, query, lo)
-        ids = [i for i in (r.get("result") or [])[:per_band] if i not in seen]
+        # 최상위 밴드는 검색이 주는 최대치(100)까지 다 뜬다 — 크라우드 수집(사용자
+        # 가격검색)이 중간 대역에 몰리는 만큼, 곡선 꼭대기는 직접 조사가 밀도를 책임진다.
+        cap = 100 if lo == THRESHOLDS[-1] else per_band
+        ids = [i for i in (r.get("result") or [])[:cap] if i not in seen]
         seen.update(ids)
         total = max(total, r.get("total") or 0)
         rows = fetch_ids(base, r["id"], ids) if ids else []
@@ -832,18 +835,33 @@ def merge_harvest(merged, rows=None):
 
     seen = {(r.get("cond"), r["id"]) for r in merged if r.get("id")}
     fps = {fp(r) for r in merged}
+
+    # 오염 방어: 수합 서버는 누구나 POST 할 수 있다 — 조작된 초저가 행이 최전선을
+    # 끌어내리지 못하게, 내 수집기(신뢰 관측)의 최전선보다 3배 이상 싸면 버린다.
+    # (환율 독버섯 사건과 같은 원리의 가드. fee 게이트는 실수 방지, 이건 악의 방지.)
+    ex_rate = lambda r: r["price"] * 1  # merged 행 price 는 화폐 단위 그대로다
+    trusted = [dict(d=(r.get("pdps") or 0) + (r.get("edps") or 0), p=r["price"], cur=r["cur"])
+               for r in merged if r.get("src") != "user"]
+
+    def num(v, default=0.0):
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
     added = 0
+    suspicious = 0
     for r in rows:
         if not isinstance(r, dict) or r.get("fee") is None:
             continue                     # 즉시구매 표시가 없는 행은 미검증 — 안 섞는다
         t = r.get("t") or 0
         if not isinstance(t, (int, float)) or t < cut:
             continue
+        mods = r.get("mods") or []
+        if not isinstance(mods, list) or not all(isinstance(m, str) for m in mods):
+            continue
         row = {"id": str(r.get("id") or ""), "name": str(r.get("name") or ""),
-               "pdps": r.get("pdps") or 0, "edps": r.get("edps") or 0,
-               "aps": r.get("aps") or 0, "crit": r.get("crit") or 0,
-               "price": r.get("price") or 0, "cur": r.get("cur") or "",
-               "rarity": r.get("rarity") or "", "mods": r.get("mods") or [],
+               "pdps": num(r.get("pdps")), "edps": num(r.get("edps")),
+               "aps": num(r.get("aps")), "crit": num(r.get("crit")),
+               "price": num(r.get("price")), "cur": r.get("cur") or "",
+               "rarity": r.get("rarity") or "", "mods": mods,
                "cond": None, "t": int(t), "src": "user"}
         if row["price"] <= 0 or row["cur"] not in TRADE_CURRENCIES:
             continue
@@ -851,15 +869,35 @@ def merge_harvest(merged, rows=None):
             continue                     # 내 수집기가 이미 본 매물 — 중복
         if fp(row) in fps:
             continue                     # 재등록(새 id, 같은 롤) — 지문으로 잡는다
+        if is_undercut_suspicious(row, trusted):
+            suspicious += 1
+            continue
         seen.add((None, row["id"]))
         fps.add(fp(row))
         merged.append(row)
         added += 1
         if len(merged) >= 5000:          # 표본 목표 상한 — frontier O(n log n)이라 여유
             break
-    if added:
-        print("     크라우드 수집 합류 +%d개 (합계 %d개)" % (added, len(merged)))
+    if added or suspicious:
+        print("     크라우드 수집 합류 +%d개 (합계 %d개, 저가 의심 제외 %d개)"
+              % (added, len(merged), suspicious))
     return merged
+
+
+def is_undercut_suspicious(row, trusted, ratio=3.0):
+    """크라우드 행이 신뢰 관측(내 수집기)의 같은 DPS 최전선보다 ratio 배 이상 싸면 의심.
+
+    비교는 엑잘 환산이 필요하지만 환율 스냅샷을 여기까지 끌고 오면 결합이 깊어진다 —
+    같은 화폐끼리만 비교해도 조작 방어엔 충분하다(조작자는 가장 싸 보이는 화폐를 쓰기
+    마련이고, 같은 화폐의 진짜 매물이 그 대역에 있으면 걸린다). 같은 화폐 기준점이
+    없으면 판단 불가로 통과시킨다 — 과잉 차단으로 진짜 표본을 버리는 쪽이 더 나쁘다.
+    """
+    d = row["pdps"] + row["edps"]
+    same_cur = [t for t in trusted if t["cur"] == row["cur"] and t["d"] >= d]
+    if not same_cur:
+        return False
+    floor = min(t["p"] for t in same_cur)
+    return row["price"] < floor / ratio
 
 
 def write_latest(payload, path=None):
@@ -1570,6 +1608,25 @@ def demo():
     assert _names == ["내활", "유저활"], _names
     assert [r for r in _m if r["name"] == "유저활"][0]["src"] == "user"
     assert merge_harvest(list(_base), rows=[]) == _base            # 빈 응답은 무변화
+
+    # 오염 방어: 신뢰 최전선(내활 100DPS 5div)보다 3배 이상 싼 크라우드 행은 거부
+    _poison = [{"id": "P", "name": "조작활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
+                "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    assert "조작활" not in [r["name"] for r in merge_harvest(list(_base), rows=_poison)]
+    _fair = [{"id": "F", "name": "정상활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
+              "price": 2, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    assert "정상활" in [r["name"] for r in merge_harvest(list(_base), rows=_fair)]
+    # 신뢰 기준점이 없는 화폐/대역은 판단 불가 — 통과 (과잉 차단 방지)
+    _nocmp = [{"id": "N", "name": "비교불가활", "pdps": 900, "edps": 0, "aps": 1, "crit": 1,
+               "price": 1, "cur": "chaos", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    assert "비교불가활" in [r["name"] for r in merge_harvest(list(_base), rows=_nocmp)]
+    # 문자열 가격 등 형 변조 행은 조용히 걸러진다 (수집 루프를 죽이면 안 된다)
+    _bad = [{"id": "S", "name": "형변조", "pdps": "100", "edps": 0, "aps": 1, "crit": 1,
+             "price": "3", "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},
+            {"id": "S2", "name": "모드변조", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
+             "price": 3, "cur": "divine", "rarity": "Rare", "mods": [{"x": 1}], "fee": 1, "t": _now}]
+    _mb = merge_harvest(list(_base), rows=_bad)
+    assert all(r["name"] not in ("형변조", "모드변조") for r in _mb), _mb
 
     # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다
     keepL2 = LATEST
