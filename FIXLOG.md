@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 18:27 [②③ path.join 전수 스윕] 발견 없음(21·22 수정이 공격표면 전체 커버 확인). HTTP 도달 가능한 path.join(dir,외부입력) 3곳: server.ts:54 GET(22 수정)·file-uploads GET(21 수정)·POST 쓰기(md5+extname 구조상 안전 — extname 은 경로구분자 미포함, 적대 URL 6종 실측 탈출 0). 나머지 path.join(ConfigStore/GameConfig/GameLogWatcher/AppTray/아이콘)은 app.getPath/__dirname/로컬설정 기반 내부경로라 원격 미도달.
 - 2026-08-24 18:08 [② server.ts 정적 서빙] 21회차와 같은 계열 경로조작 발견·수정. 메인 정적 파일 라우트(45행 fs.createReadStream(path.join(__dirname, req.url)))가 /../../.. 로 __dirname(앱 리소스) 탈출(node 실측) — /uploads 만 고치고 이 기본 라우트를 놓쳤음(복제 결함). path.resolve 격리 체크(밖이면 403) 추가, 정상 에셋 경로 해석은 기존과 동일(실측 허용/traversal 차단). 원격 유출은 여전히 localhost+랜덤포트+무CORS 로 막혀 있으나 배포 심층방어. 메인 빌드 OK, 실행 교체 대기.
 - 2026-08-24 17:50 [③ 파일 업로드 경로] 확인된 경로 조작(EE2 원본 file-uploads.ts) — GET /uploads/ 가 URL 접미사를 path.join 에 정규화 없이 넘겨 ../../.. 로 uploadsPath 탈출(node 실측). 현재 유출은 localhost+랜덤포트+무CORS 로 막혀 있으나(응답 본문 크로스오리진 판독 불가), 배포 바이너리 심층방어로 path.resolve 격리 체크(target 이 uploadsPath 밖이면 403) 추가 — 정상 md5.확장자 파일명은 영향 0(실측 허용/traversal 차단). 메인 빌드 OK, 실행 교체 대기.
 - 2026-08-24 17:28 [① harvest.ts 재독해] 발견 없음. 13회차 경쟁조건 수정 완결성 재검토: 각 행이 큐 적재 전 normalizeResult 로 league 를 구워 저장→전역 _queue 에 여러 검색 행이 섞여도 무해(근본 수정 확인). _flush 재예약(1s) 중 harvestFetchResults 재호출 시 !flushTimer 가드로 이중예약·행유실·타이머누수 없음. ctx.league(요청시점)+language(수집시점) 이중게이트가 pc-ggg Standard 같은 비-카카오 Standard 를 올바르게 제외.
