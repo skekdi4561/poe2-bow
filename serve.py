@@ -1809,6 +1809,12 @@ def demo():
     assert _g4["divine"]["rate"] == 900
     _g5 = guard_rates({"annul": {"rate": 5000}}, {"annul": 150.0})   # 00:37 실사고 — 위쪽 독버섯
     assert _g5["annul"]["rate"] == 150 and "관측 5000" in _g5["annul"]["how"], _g5
+    # 첫 수집(기억 없음)은 관측을 그대로 통과 — 비교 대상이 없으니 거부하면 안 된다
+    _g6 = guard_rates({"divine": {"rate": 350}}, {})
+    assert _g6["divine"]["rate"] == 350, _g6
+    # 정확히 3배 경계는 통과(거부는 미만/초과만) — 400*3=1200, 400/3≈133.3
+    assert guard_rates({"divine": {"rate": 1200}}, {"divine": 400.0})["divine"]["rate"] == 1200
+    assert guard_rates({"divine": {"rate": 400 / 3.0}}, {"divine": 400.0})["divine"]["rate"] == 400 / 3.0
 
     # rate_memory: 독버섯이 낀 이력에서 중앙값이 진짜 값을 살려내는지 (임시 DB)
     keep_db3 = DB
@@ -1822,6 +1828,21 @@ def demo():
                 con.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
                             (now_ms - i * 3600000, "u", json.dumps(r)))
         assert rate_memory()["divine"] == 300, rate_memory()   # rate [300,400,300] 의 중앙값 (obs 10 무시)
+        # 불변식: rate_memory 는 r>=1 만 기억에 넣는다 — 이게 guard_rates 의 m 을 항상 >=1 로
+        # 보장해 "m=0 이면 모든 양수 관측이 m*3=0 초과로 거부되고 rate 가 0 으로 오염"되는 걸 막는다.
+        # 이 필터를 지우면 아래가 깨진다(다른 어떤 테스트도 이 오염을 안 잡음).
+        d5 = tempfile.mkdtemp(); _kd = DB; DB = os.path.join(d5, "z.db")
+        try:
+            with db() as con:
+                for i, r in enumerate(({"chaos": {"rate": 0}}, {"chaos": {"rate": 0.5}},
+                                        {"chaos": {"rate": 60}})):
+                    con.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                                (int(time.time()*1000) - i*3600000, "u", json.dumps(r)))
+            _rm = rate_memory()
+            assert _rm.get("chaos") == 60, _rm            # 0 과 0.5 는 필터됨 → 60 만 남아 중앙값 60
+            assert all(v >= 1 for v in _rm.values()), _rm  # 기억은 항상 >=1
+        finally:
+            DB = _kd; shutil.rmtree(d5, ignore_errors=True)
     finally:
         DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
 

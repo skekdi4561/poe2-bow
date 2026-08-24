@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 16:09 [① 환율 독버섯 방어] 발견 없음(방어 견고). guard_rates/solve_rates/best_offer 는 두 실사고(#15-17 하락미끼·00:37 상승미끼) 회귀 테스트 완비 확인. 커버리지 공백 하나 보강: rate_memory 의 r>=1 필터가 guard_rates 의 m 을 항상 >=1 로 보장(=m*3 0-오염 차단)하는 불변식이 미검증이었음 — 이 필터 제거 시 깨지는 임시DB 테스트 + 빈 기억 통과 + 정확히 3배 경계 통과 3종 추가. self-test PASS.
 - 2026-08-24 15:48 [③ 게임 로그 감시] 발견 없음(EE2 원본, 우리 포크서 기본 비활성 readClientLog:false). readToEOF 는 64KB 청크·offset 단조증가·EOF 종료라 무한루프/메모리 누적 없음. 64KB 경계 UTF-8 멀티바이트 분할은 원본 동작·미관 수준(크래시 아님)이라 미변경 상류 코드로 수정 대상 아님.
 - 2026-08-24 15:29 [① index.html 예산·환율 경계] 발견 없음. posToBudget(pos 클램프·lo==hi NaN 없음), budgetRange null+2행미만 980행 가드로 posToBudget 크래시 차단, lo 는 p>0 필터로 항상 양수(0나눗셈 불가), dpsAt 은 예산부족·빈배열·NaN 에 null 안전, money() 디바인 자동전환 정확(300ex=1div 경계·음수 절대값·환율0 시 ex 유지) — 전부 node 실측 확인.
 - 2026-08-24 15:11 [① harvest 훅 통합] 경쟁 조건 수정: 수집 문맥을 모듈 전역 ctx 로 두고 async 응답 시점에 읽어, 검색A(검) 직후 검색B(활)를 하면 A 응답 도착 시 ctx 가 활로 바뀌어 검(pdps 존재)이 활 데이터로 오염 업로드됐다(node 재현 확인). 전역 ctx 제거→HarvestCtx 를 requestResults opts 로 요청마다 고정 전달(값이라 서로 안 섞임). vitest 2종 추가, 빌드+미리보기 회귀 없음(772개), 실행 교체 대기.
