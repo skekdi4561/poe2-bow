@@ -848,6 +848,9 @@ def merge_harvest(merged, rows=None, verifier=None):
     def num(v, default=0.0):
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
 
+    # 상한 — 워커와 같은 기준. isFinite 만으론 pdps=1e300 이 곡선 DPS 축을 날린다(실측).
+    HMAX = {"dps": 100000.0, "aps": 100.0, "crit": 100.0, "price": 1e9}
+
     added = 0
     suspicious = 0
     unverified = 0
@@ -866,7 +869,11 @@ def merge_harvest(merged, rows=None, verifier=None):
                "price": num(r.get("price")), "cur": r.get("cur") or "",
                "rarity": r.get("rarity") or "", "mods": mods,
                "cond": None, "t": int(t), "src": "user"}
-        if row["price"] <= 0 or row["cur"] not in TRADE_CURRENCIES:
+        if row["price"] <= 0 or row["price"] > HMAX["price"] or row["cur"] not in TRADE_CURRENCIES:
+            continue
+        if row["pdps"] > HMAX["dps"] or row["edps"] > HMAX["dps"] or row["pdps"] < 0 or row["edps"] < 0:
+            continue                     # 상한 밖 = 조작 — 곡선 축을 지킨다
+        if row["aps"] > HMAX["aps"] or row["crit"] > HMAX["crit"]:
             continue
         if row["id"] and (None, row["id"]) in seen:
             continue                     # 내 수집기가 이미 본 매물 — 중복
@@ -1692,6 +1699,10 @@ def demo():
              "price": 3, "cur": "divine", "rarity": "Rare", "mods": [{"x": 1}], "fee": 1, "t": _now}]
     _mb = merge_harvest(list(_base), rows=_bad)
     assert all(r["name"] not in ("형변조", "모드변조") for r in _mb), _mb
+    # 상한 밖 조작(거대 DPS/가격)은 곡선에 못 들어온다 — 검증자 없이도 컷
+    _huge = [{"id": "H", "name": "폭탄", "pdps": 1e9, "edps": 0, "aps": 1, "crit": 1,
+              "price": 999, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    assert "폭탄" not in [r["name"] for r in merge_harvest(list(_base), rows=_huge)]
 
     # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다
     keepL2 = LATEST

@@ -20,16 +20,22 @@ async function ensureSchema(db) {
   schemaReady = true;
 }
 
-// serve.py normalize 스키마와 같은 행만 통과 — 이상한 값은 조용히 버린다
+// serve.py normalize 스키마와 같은 행만 통과 — 이상한 값은 조용히 버린다.
+// 상한은 조작 방어의 핵심: isFinite 만 보면 pdps:1e300 이 통과해 곡선의 DPS 축을
+// 통째로 날려버린다(실측 재현됨). 현실 활 최대치보다 넉넉하되 유한하게 잡는다.
+const MAX = { dps: 100000, aps: 100, crit: 100, price: 1e9, fee: 1e12 };
 function validRow(r) {
   if (!r || typeof r !== "object") return null;
   const num = (v) => typeof v === "number" && isFinite(v);
   if (typeof r.id !== "string" || !r.id || r.id.length > 64) return null;
-  if (!num(r.price) || r.price <= 0) return null;
+  if (!num(r.price) || r.price <= 0 || r.price > MAX.price) return null;
   if (!CURRENCIES.has(r.cur)) return null;
   if (!num(r.pdps) || !num(r.edps) || r.pdps < 0 || r.edps < 0) return null;
+  if (r.pdps > MAX.dps || r.edps > MAX.dps) return null;
   if (r.pdps + r.edps <= 0) return null;
   if (!num(r.aps) || !num(r.crit)) return null;
+  if (r.aps < 0 || r.aps > MAX.aps || r.crit < 0 || r.crit > MAX.crit) return null;
+  if (r.fee != null && (!num(r.fee) || r.fee < 0 || r.fee > MAX.fee)) return null;
   if (!RARITIES.has(r.rarity ?? "")) return null;
   if (typeof r.name !== "string" || r.name.length > 120) return null;
   if (!Array.isArray(r.mods) || r.mods.length > 40) return null;
@@ -46,7 +52,7 @@ function validRow(r) {
     cur: r.cur,
     rarity: r.rarity ?? "",
     mods: r.mods,
-    fee: num(r.fee) ? r.fee : null,
+    fee: num(r.fee) && r.fee > 0 ? r.fee : null,
   };
 }
 
