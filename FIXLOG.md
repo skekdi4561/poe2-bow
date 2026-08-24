@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 22:51 [① 위젯 필터 숫자 엣지] 발견 없음. matchesFilters+normFilters 를 NaN/음수/모순/빈값으로 node 실측 — NaN min/max 는 v<NaN=false 라 무해한 no-op(필터 없음), 음수 정상, min>max 는 올바르게 false, 빈값은 normFilters 가 null 로 정규화. 크래시·잘못된 제외 경로 0. [잠복 footgun·결함 아님] NaN 이 number 타입이라 normFilters 통과 — 지금 무해하나 matchesFilters 비교 로직 변경 시 재확인 필요.
 - 2026-08-24 22:29 [① 사이트 넓은 DPS 렌더] 발견 없음. 라이브 사이트 실측: 차트 X축 195~1,451(=max DPS×1.04), 최대 플롯 DPS 1395, 975개 전부 산점도 표시, Y축 로그(10~1M) 정상 — 클리핑 없음. 위젯(26회)에 이어 사이트도 수집 재설계(→1395) 온전 반영. [오탐 교훈] 첫 프로브가 콤마 라벨('1,451')을 정규식으로 놓쳐 823을 최대로 오인 → 산점도 title 재프로브로 측정도구 결함임을 확인(실제 위반 아님).
 - 2026-08-24 22:10 [수집기 잠금 재독해] 도달 가능 결함 발견·수정: read_lock_pid 가 (FileNotFoundError,ValueError)만 잡아, 이 폴더가 OneDrive 라 락 파일이 순간 잠기면 PermissionError 로 수집기가 시작 시 크래시(디렉터리 경로로 재현). 잠금은 안전장치일 뿐이므로 read 는 OSError 전체를 None 처리, acquire 의 write 실패는 크래시 대신 '잠금 없이 진행+경고'로 우아하게 저하. 회귀 테스트(못 읽는 경로→None) 추가. self-test PASS, 재시작.
 - 2026-08-24 22:01 [수집기 싱글톤 잠금] 리스크 없는 개선: 두 수집기가 동시에 돌면 거래소 요청 2배→레이트 리밋 위험(오늘 여러 재시작에서 수동 회피). collector.lock(PID) 로 중복 실행을 구조적으로 차단, 강제종료 stale 락은 자동 회수. end-to-end 실측: 2번째 인스턴스 즉시 거부·수집 안 함, 데몬 유지.
