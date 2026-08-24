@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 15:11 [① harvest 훅 통합] 경쟁 조건 수정: 수집 문맥을 모듈 전역 ctx 로 두고 async 응답 시점에 읽어, 검색A(검) 직후 검색B(활)를 하면 A 응답 도착 시 ctx 가 활로 바뀌어 검(pdps 존재)이 활 데이터로 오염 업로드됐다(node 재현 확인). 전역 ctx 제거→HarvestCtx 를 requestResults opts 로 요청마다 고정 전달(값이라 서로 안 섞임). vitest 2종 추가, 빌드+미리보기 회귀 없음(772개), 실행 교체 대기.
 - 2026-08-24 14:48 [③ 클립보드 파서] 발견 없음(EE2 원본, 미변경). 정적: parseClipboard 전체 try/catch(예외→graceful err), 유일 while(!stat.done)의 전 분기가 statIterator.next() 로 전진→무한루프 불가. 동적: 미리보기에서 기형 입력 7종(빈/구분선만/5만줄반복/유니코드폭탄/널바이트/숫자없는mod) 실측 — 전부 <10ms 안전 처리, hang/크래시 없음, 5만줄 9.8ms 로 O(n²) 없음 확인.
 - 2026-08-24 14:28 [② 단축키 등록] 발견 없음. F7 market-curve 토글이 Shortcuts.ts 등록과 정합: F7 은 예약 게임키 집합에 없음(자유), UiohookKey.F7=65 유효(keepModKeys 릴리스 정상), 액션은 toggleKey truthy 시만 push(빈키 등록 없음), dedup 안전. [UX 한계·결함 아님] market-curve 는 키 재설정 UI 가 없어 충돌 시 config 수동편집 필요 — 현재 F7 비어 있어 무해, 개선 여지로만 기록.
 - 2026-08-24 14:08 [① /recent↔merge 소비 경계] 발견 없음. 워커 보존48h/제공24h·최신3000 vs serve 소비24h·최대5000 창 정합 확인. 경계 t 7종 주입(안쪽/직후/t==cut 경계/직전/48h/t누락/t문자열) — 잘못·누락 t 는 항상 제외(fail-safe), 경계는 t<cut 이라 포함. [의도된 특성·재조사 불필요] 크라우드 t 는 INSERT OR IGNORE 로 최초관측에 고정→계속 팔려도 24h 후 크라우드 표본서 빠짐(24h 신선도 목표 부합, 수집기 스윕이 최전선 보완).
