@@ -1173,6 +1173,76 @@ def push_latest(cwd=None):
     return "push-fail"
 
 
+# 수집기 싱글톤 잠금 — 두 인스턴스가 동시에 돌면 거래소 요청이 2배가 돼 레이트 리밋/
+# 차단 위험이 생긴다(절대 규칙 위반). 오늘 여러 번 재시작하며 수동으로 옛 것을 죽여야
+# 했던 위험을 구조적으로 차단한다. 강제 종료로 남은 stale 락(죽은 PID)은 자동 회수.
+LOCK_FILE = os.path.join(ROOT, "collector.lock")
+
+
+def pid_alive(pid):
+    """PID 가 살아있는 프로세스인가. Windows 는 os.kill(pid, 0) 이 살아있는 프로세스에도
+    WinError 87 을 던져 신뢰 불가(실측) — ctypes OpenProcess 로 확인한다. 이걸 os.kill 로
+    짰다가 살아있는 데몬을 죽었다고 오판해 싱글톤 잠금이 무용지물이던 버그가 있었다."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        ERROR_ACCESS_DENIED = 5
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return k.GetLastError() == ERROR_ACCESS_DENIED   # 열지 못함=없음(권한거부는 존재)
+        try:
+            code = ctypes.c_ulong()
+            if k.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True                          # 열렸으나 조회 실패 = 살아있다고 본다
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                             # 존재하지만 권한 없음 = 살아있음
+    except OSError:
+        return False
+    return True
+
+
+def read_lock_pid(path=None):
+    """락 파일의 PID 를 읽는다. 없거나 깨졌으면 None."""
+    try:
+        with open(path or LOCK_FILE) as f:
+            return int((f.read().strip() or "0"))
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def acquire_collector_lock():
+    """이미 살아있는 수집기가 있으면 그 PID 를 반환(→호출부가 종료). 없거나 죽었으면
+    내 PID 로 락을 잡고 None 반환. 정상 종료 시 atexit 로 내 락만 지운다."""
+    old = read_lock_pid()
+    if old and old != os.getpid() and pid_alive(old):
+        return old                              # 다른 수집기가 돌고 있다
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    import atexit
+    atexit.register(release_collector_lock)
+    return None
+
+
+def release_collector_lock():
+    """내가 잡은 락만 지운다(다른 인스턴스 것은 안 건드림)."""
+    try:
+        if read_lock_pid() == os.getpid():
+            os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+
 def collect_loop(url, every, limit):
     while True:
         try:
@@ -1852,6 +1922,31 @@ def demo():
     finally:
         DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
 
+    # 수집기 싱글톤 잠금: 살아있는 PID 는 잡혀 있고, 죽은/없는 PID 는 회수된다.
+    # 실제 살아있는 '다른' 프로세스로 검증 — os.kill(pid,0) 은 Windows 에서 살아있는
+    # 타 프로세스에 WinError 87 을 던져 오판했다(그 버그는 own/dead 만 보는 약한 테스트를
+    # 통과했으므로, 반드시 별도 프로세스로 확인해야 재발을 잡는다).
+    assert pid_alive(os.getpid()) is True and pid_alive(999999) is False and pid_alive(0) is False
+    import subprocess as _sp
+    _child = _sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert pid_alive(_child.pid) is True, "살아있는 자식 프로세스를 죽었다고 오판"
+    finally:
+        _child.terminate(); _child.wait()
+    assert pid_alive(_child.pid) is False, "종료된 자식 프로세스를 살아있다고 오판"
+    import tempfile as _tf
+    _ld = _tf.mkdtemp()
+    _lk = os.path.join(_ld, "collector.lock")
+    try:
+        assert read_lock_pid(_lk) is None                  # 없는 파일
+        with open(_lk, "w") as _f: _f.write("999999")      # 죽은 PID 락
+        assert read_lock_pid(_lk) == 999999
+        assert pid_alive(read_lock_pid(_lk)) is False       # → stale, 회수 대상
+        with open(_lk, "w") as _f: _f.write("깨진값")
+        assert read_lock_pid(_lk) is None                  # 깨진 락은 None(=회수 가능)
+    finally:
+        shutil.rmtree(_ld, ignore_errors=True)
+
     # 단축키 문구 해석: 펑션키/수식키 조합/잡문구
     assert parse_hotkey("F6") == (0, 0x75, "F6")
     assert parse_hotkey("f12") == (0, 0x7B, "F12")
@@ -2231,6 +2326,12 @@ if __name__ == "__main__":
         every = arg("--every")
         if not os.environ.get("POESESSID"):
             print("참고: POESESSID 미설정 — 거래소가 로그인을 요구하면 파일 맨 위 설명을 보세요.")
+        running = acquire_collector_lock()
+        if running is not None:
+            sys.exit("이미 수집기가 돌고 있습니다 (PID %d). 중복 실행은 거래소 요청을 "
+                     "2배로 만들어 레이트 리밋 위험이 있어 종료합니다. "
+                     "정말 새로 띄우려면 먼저 그 프로세스를 끄거나 %s 를 지우세요."
+                     % (running, LOCK_FILE))
         if every:
             collect_loop(url, max(600, int(every)), limit)   # 10분보다 자주는 안 뜬다
         else:
