@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-25 00:50 [① money 3자 일치] 주 화면 일치 확인, 미수정. 소수 임계값(100/10/1/0.1)·단위전환·라벨(ex/div) 3자(serve.py/index.html/appraiser) 동일. 실측 13값 대조: 두 주 화면(사이트 index.html+위젯 appraiser)은 둘 다 JS toLocaleString 이라 완전 일치. 유일 차이 12345ex=41.15div 에서 Python money_py '41.1'(레거시 오버레이 price_verdict) vs JS '41.2' — float64 로 41.15 가 41.1499.. 라 Python 이 오히려 정확, JS 는 십진 올림 아티팩트. 레거시 단독 표면이고 억지 정렬은 정확도 저하 리스크라 미수정.
 - 2026-08-25 00:29 [① write/push 경로 + 잠금 위생] write_latest(.tmp→os.replace 원자적·Win 읽기충돌 백오프·json 실패 시 원본 무손상)와 push_latest(실패해도 수집 계속·latest.json 만 add) 는 견고 확인. 발견: collector.lock(27회차 신규)이 .gitignore 누락 — push_latest 는 안 건드리나 향후 git add -A 시 PID 상태파일이 커밋될 지뢰. CLAUDE.md '상태는 소스 아님' 원칙대로 gitignore 등록(check-ignore 확인).
 - 2026-08-25 00:11 [① staleKept 배너 재확인] 직전 회차 코드 재독해로 오타 발견·수정: staleKept 경고 배너 '멈줘을'→'멈췄을'(Python byte-escape 로 한글 넣다 생긴 잘못된 글자). 위젯/appraiser 의 다른 byte-escape 한글도 스캔 — 추가 오타 없음. 빌드 통과. [교훈] 한글 문자열은 byte-escape 대신 Write 도구로 넣을 것.
 - 2026-08-24 23:11 [① 위젯 낡은 데이터 처리] 실결함 수정: 데이터가 24h 넘게 낡으면 위젯이 '시세 데이터를 불러오지 못했습니다'(로드 실패)로 오표시 — 실제론 로드됐고 낡았을 뿐(node 재현). 사이트 partition 의 staleKept 폴백을 위젯에도 이식: 신선분<2 면 낡은 매물로 곡선을 그리고 노란 경고 배너 표시. rowsFromSnapshot 이 staleKept 반환, vitest 2종 추가. 빌드+미리보기 회귀 없음(신선 데이터는 배너 없이 971개 정상), 실행 교체 대기.
