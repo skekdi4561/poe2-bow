@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 13:10 [① appraiser 스냅샷 파싱] latest.json 읽기 경계에서 pdps/edps/price 를 타입 검사 없이 `?? 0` 만 써서, 숫자 아닌 값이 오면 pdps+edps 가 문자열 결합("227"+38="22738")돼 frontier 정렬을 오염(실측 재현). 4회차 '경계마다 숫자 강제' 원칙이 빠졌던 읽기 경계 — numOr0 로 강제, rowsFromSnapshot 순수 함수로 추출해 극단값 주입 vitest 2종 추가. 현 파이프라인(serve/worker 숫자 보장)에선 미도달이나 심층 방어. 빌드+미리보기 회귀 없음(매물 776개 정상), 실행 교체 대기.
 - 2026-08-24 12:48 [② 설정 마이그레이션+IPC] 발견 없음. configVersion 35 위젯 추가 마이그레이션의 wmId 계산이 EE2 원본 6개 마이그레이션과 동일 패턴(손상 설정 NaN 은 원본 동작·재현 불가라 수정 안 함), 신규(defaultConfig)/기존(마이그레이션) 두 경로 위젯 형태 일치 확인. focus-overlay 이벤트 이름 3파일(ipc/types·OverlayWindow·위젯) 일치 + app.asar 포함 확인.
 - 2026-08-24 12:29 [③ 렌더링 XSS] 발견 없음. 크라우드 옵션/이름 문자열이 위젯·사이트에 표시되는 전 경로 점검 — 위젯은 v-html 전무(Vue {} 자동 이스케이프), index.html 은 모든 innerHTML 삽입부에 esc() 적용(shortMod/name/옵션키/data-key). 공격 페이로드 4종(img onerror, script, 마크업 삽입, span 탈출)을 modKey+esc 실제 파이프라인에 통과시켜 전부 &lt; 로 무해화 확인.
 - 2026-08-24 11:50 [① worker 입력검증] 숫자 필드에 상한이 없어 pdps:1e300 같은 값이 통과 → 곡선 DPS 축 파괴(merge_harvest 최종 관문까지 침투 실측). 워커 validRow + serve.py merge 양쪽에 상한(dps 10만/aps 100/crit 100/price 1e9) 추가, fee=0 은 null 처리(fee 게이트 우회 차단). 워커 배포+스모크(거대행 accepted 0, 혼합 1), serve self-test 통과. CORS(*)·body 300KB·slice(60)-before-map·바인드 파라미터는 안전 확인.
