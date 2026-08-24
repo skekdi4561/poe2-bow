@@ -622,9 +622,11 @@ def load_banded(page_url, per_band):
     for lo in THRESHOLDS:
         throttle("search")
         r = search_min_dps(base, league_path, query, lo)
-        # 최상위 밴드는 검색이 주는 최대치(100)까지 다 뜬다 — 크라우드 수집(사용자
-        # 가격검색)이 중간 대역에 몰리는 만큼, 곡선 꼭대기는 직접 조사가 밀도를 책임진다.
-        cap = 100 if lo == THRESHOLDS[-1] else per_band
+        # 고-DPS 밴드는 상한을 30 으로 낮춘다. 트레이드 API 의 dps 필터 지표가 우리
+        # pdps+edps 와 달라(품질20/카오스 포함 추정) "dps>=780" 에 수백 개가 매칭돼,
+        # 그대로 100 을 fetch 하면 레이트 리밋을 태운다(실측: 780 밴드가 96개 fetch →
+        # fetch 한도 도달 반복). 고-DPS 끝단은 최저가 30개면 곡선 꼭대기를 충분히 긋는다.
+        cap = 30 if lo >= 660 else per_band
         ids = [i for i in (r.get("result") or [])[:cap] if i not in seen]
         seen.update(ids)
         total = max(total, r.get("total") or 0)
