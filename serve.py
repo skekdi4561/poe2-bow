@@ -1213,11 +1213,13 @@ def pid_alive(pid):
 
 
 def read_lock_pid(path=None):
-    """락 파일의 PID 를 읽는다. 없거나 깨졌으면 None."""
+    """락 파일의 PID 를 읽는다. 없거나 깨졌거나 못 읽으면(OneDrive 잠금 등) None."""
     try:
         with open(path or LOCK_FILE) as f:
             return int((f.read().strip() or "0"))
-    except (FileNotFoundError, ValueError):
+    except ValueError:
+        return None
+    except OSError:                             # FileNotFoundError 포함 — 못 읽으면 안전하게 None
         return None
 
 
@@ -1227,8 +1229,14 @@ def acquire_collector_lock():
     old = read_lock_pid()
     if old and old != os.getpid() and pid_alive(old):
         return old                              # 다른 수집기가 돌고 있다
-    with open(LOCK_FILE, "w") as f:
-        f.write(str(os.getpid()))
+    try:
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        # 락 파일을 못 쓰면(OneDrive 순간 잠금·권한 등) 크래시하지 말고 잠금 없이 진행한다.
+        # 잠금은 중복 실행 방지용 안전장치일 뿐, 못 쓴다고 수집을 막는 게 더 나쁘다.
+        print("     참고: 잠금 파일 기록 실패(%s) — 잠금 없이 진행합니다." % e)
+        return None
     import atexit
     atexit.register(release_collector_lock)
     return None
@@ -1944,6 +1952,9 @@ def demo():
         assert pid_alive(read_lock_pid(_lk)) is False       # → stale, 회수 대상
         with open(_lk, "w") as _f: _f.write("깨진값")
         assert read_lock_pid(_lk) is None                  # 깨진 락은 None(=회수 가능)
+        # 못 읽는 경로(OneDrive 잠금 재현: 디렉터리)여도 크래시 없이 None — 수집기 시작을 막지 않는다
+        _dir = os.path.join(_ld, "islocked"); os.mkdir(_dir)
+        assert read_lock_pid(_dir) is None
     finally:
         shutil.rmtree(_ld, ignore_errors=True)
 
