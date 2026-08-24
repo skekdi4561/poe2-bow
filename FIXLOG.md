@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 15:29 [① index.html 예산·환율 경계] 발견 없음. posToBudget(pos 클램프·lo==hi NaN 없음), budgetRange null+2행미만 980행 가드로 posToBudget 크래시 차단, lo 는 p>0 필터로 항상 양수(0나눗셈 불가), dpsAt 은 예산부족·빈배열·NaN 에 null 안전, money() 디바인 자동전환 정확(300ex=1div 경계·음수 절대값·환율0 시 ex 유지) — 전부 node 실측 확인.
 - 2026-08-24 15:11 [① harvest 훅 통합] 경쟁 조건 수정: 수집 문맥을 모듈 전역 ctx 로 두고 async 응답 시점에 읽어, 검색A(검) 직후 검색B(활)를 하면 A 응답 도착 시 ctx 가 활로 바뀌어 검(pdps 존재)이 활 데이터로 오염 업로드됐다(node 재현 확인). 전역 ctx 제거→HarvestCtx 를 requestResults opts 로 요청마다 고정 전달(값이라 서로 안 섞임). vitest 2종 추가, 빌드+미리보기 회귀 없음(772개), 실행 교체 대기.
 - 2026-08-24 14:48 [③ 클립보드 파서] 발견 없음(EE2 원본, 미변경). 정적: parseClipboard 전체 try/catch(예외→graceful err), 유일 while(!stat.done)의 전 분기가 statIterator.next() 로 전진→무한루프 불가. 동적: 미리보기에서 기형 입력 7종(빈/구분선만/5만줄반복/유니코드폭탄/널바이트/숫자없는mod) 실측 — 전부 <10ms 안전 처리, hang/크래시 없음, 5만줄 9.8ms 로 O(n²) 없음 확인.
 - 2026-08-24 14:28 [② 단축키 등록] 발견 없음. F7 market-curve 토글이 Shortcuts.ts 등록과 정합: F7 은 예약 게임키 집합에 없음(자유), UiohookKey.F7=65 유효(keepModKeys 릴리스 정상), 액션은 toggleKey truthy 시만 push(빈키 등록 없음), dedup 안전. [UX 한계·결함 아님] market-curve 는 키 재설정 UI 가 없어 충돌 시 config 수동편집 필요 — 현재 F7 비어 있어 무해, 개선 여지로만 기록.
