@@ -989,6 +989,65 @@ def write_latest(payload, path=None):
     raise err
 
 
+# 가격 추세 앵커 — 시장 실측 범위(204~1395)에서 저·중·고 대표점. "지금 살까 기다릴까"용.
+TREND_ANCHORS = [500, 700, 900]
+
+
+def build_trend(hours=72, anchors=None, con=None):
+    """최근 N시간 스냅샷마다 앵커 DPS 의 최저가(엑잘 환산)를 뽑아 시계열을 만든다.
+
+    이미 snapshots.db 에 쌓인 이력을 쓰는 것 — 새 데이터 소스 0. 각 스냅샷은 자기
+    시점의 rates 를 저장하므로 그때 환율로 엑잘 환산해야 시점 간 비교가 옳다.
+    최저가는 그 DPS 이상 활 중 가장 싼 것(최전선 floor). 희귀만(곡선과 같은 기준).
+    """
+    anchors = anchors or TREND_ANCHORS
+    cut = int((time.time() - hours * 3600) * 1000)
+    close = False
+    if con is None:
+        con = db(); close = True
+    try:
+        snaps = con.execute(
+            "SELECT id, taken_at, rates FROM snapshots WHERE taken_at >= ? ORDER BY taken_at ASC",
+            (cut,)).fetchall()
+        points = []
+        for sid, taken, rates_json in snaps:
+            try:
+                rmap = json.loads(rates_json or "{}")
+            except (TypeError, ValueError):
+                rmap = {}
+            def rate_of(cur):
+                v = rmap.get(cur)
+                r = (v.get("rate") if isinstance(v, dict) else v) if v is not None else None
+                if isinstance(r, (int, float)) and r >= 1:
+                    return float(r)
+                return 1.0 if cur == "exalted" else 0.0
+            bows = con.execute(
+                "SELECT pdps, edps, price, cur, rarity FROM bows WHERE snapshot_id = ?",
+                (sid,)).fetchall()
+            floors = {}
+            for a in anchors:
+                best = None
+                for pdps, edps, price, cur, rarity in bows:
+                    if (rarity or "Rare") != "Rare":
+                        continue
+                    r = rate_of(cur)
+                    if r <= 0 or not price:
+                        continue
+                    if (pdps or 0) + (edps or 0) < a:
+                        continue
+                    ex = price * r
+                    if best is None or ex < best:
+                        best = ex
+                if best is not None:
+                    floors[str(a)] = round(best, 2)
+            if floors:
+                points.append({"t": taken, "floors": floors})
+        return {"anchors": anchors, "points": points}
+    finally:
+        if close:
+            con.close()
+
+
 def recent_rows(hours=24):
     """최근 N시간 스냅샷의 합집합. 같은 매물(id)은 가장 최근 관측만 남긴다.
 
@@ -1122,8 +1181,12 @@ def collect(url, limit=100):
     merged = merge_harvest(
         recent_rows(),
         verifier=make_harvest_verifier(base, league_path0, q0))
+    try:
+        trend = build_trend()
+    except Exception as e:                       # 추세는 부가정보 — 실패해도 수집은 나간다
+        print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e)); trend = None
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
-                  "rates": rates, "conds": conds, "bows": merged})
+                  "rates": rates, "conds": conds, "bows": merged, "trend": trend})
     print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → latest.json"
           % (time.strftime("%H:%M:%S"), len(bows), len(merged), total, skipped))
     for name, b in RATE_STATE.items():
@@ -1929,6 +1992,35 @@ def demo():
             DB = _kd; shutil.rmtree(d5, ignore_errors=True)
     finally:
         DB = keep_db3; shutil.rmtree(d4, ignore_errors=True)
+
+    # 가격 추세: 임시 DB 로 앵커 최저가 시계열 검증 (실제 snapshots.db 미변경)
+    _td = tempfile.mkdtemp(); _keep_bt = DB; DB = os.path.join(_td, "t.db")
+    try:
+        _now = int(time.time() * 1000)
+        with db() as _c:
+            _s1 = _c.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                             (_now - 3600000, "u", json.dumps({"divine": {"rate": 300}}))).lastrowid
+            _s2 = _c.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                             (_now, "u", json.dumps({"divine": {"rate": 300}}))).lastrowid
+            _ib = ("INSERT INTO bows(snapshot_id,pdps,edps,price,cur,rarity) VALUES (?,?,?,?,?,?)")
+            # s1: 700DPS 활 2개(3div=900ex, 5div=1500ex) → floor 900
+            _c.execute(_ib, (_s1, 700, 0, 3, "divine", "Rare"))
+            _c.execute(_ib, (_s1, 700, 0, 5, "divine", "Rare"))
+            # s2: 같은 700DPS 가 2div=600ex 로 하락 → floor 600 (추세 하락)
+            _c.execute(_ib, (_s2, 720, 0, 2, "divine", "Rare"))
+            # 500 미만/비희귀는 앵커 700 에 안 잡힘
+            _c.execute(_ib, (_s2, 400, 0, 1, "divine", "Rare"))
+            _c.execute(_ib, (_s2, 800, 0, 1, "divine", "Magic"))
+        _tr = build_trend(anchors=[700])
+        _pts = _tr["points"]
+        assert len(_pts) == 2, _pts
+        assert _pts[0]["floors"]["700"] == 900 and _pts[1]["floors"]["700"] == 600, _pts  # 하락 추세
+        assert _pts[0]["t"] < _pts[1]["t"]                                                 # 시간 오름차순
+        # 앵커 900 은 s1·s2 둘 다 매물 없음 → floors 비어 그 스냅샷 제외
+        _tr2 = build_trend(anchors=[900])
+        assert _tr2["points"] == [], _tr2
+    finally:
+        DB = _keep_bt; shutil.rmtree(_td, ignore_errors=True)
 
     # 수집기 싱글톤 잠금: 살아있는 PID 는 잡혀 있고, 죽은/없는 PID 는 회수된다.
     # 실제 살아있는 '다른' 프로세스로 검증 — os.kill(pid,0) 은 Windows 에서 살아있는
