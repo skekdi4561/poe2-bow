@@ -836,9 +836,11 @@ def merge_harvest(merged, rows=None):
     seen = {(r.get("cond"), r["id"]) for r in merged if r.get("id")}
     fps = {fp(r) for r in merged}
 
-    # 오염 방어: 수합 서버는 누구나 POST 할 수 있다 — 조작된 초저가 행이 최전선을
-    # 끌어내리지 못하게, 내 수집기(신뢰 관측)의 최전선보다 3배 이상 싸면 버린다.
-    # (환율 독버섯 사건과 같은 원리의 가드. fee 게이트는 실수 방지, 이건 악의 방지.)
+    # 오염 방어: 수합 서버는 누구나 POST 할 수 있다 — 존재하지 않는 매물을 JSON 으로
+    # 조작해 최전선을 끌어내리는 것만 막는다. 기준은 10배: 즉시구매 시장에서 진짜 싼
+    # 매물은 바로 팔리므로(사용자 판단) 실제 꿀매물이 1/10 가격까지 갈 일은 없고,
+    # "700 DPS 1엑잘" 류의 명백한 날조만 걸리게 느슨히 잡았다. 3배였다가 과도하다는
+    # 사용자 피드백으로 완화(2026-08-24).
     ex_rate = lambda r: r["price"] * 1  # merged 행 price 는 화폐 단위 그대로다
     trusted = [dict(d=(r.get("pdps") or 0) + (r.get("edps") or 0), p=r["price"], cur=r["cur"])
                for r in merged if r.get("src") != "user"]
@@ -884,7 +886,7 @@ def merge_harvest(merged, rows=None):
     return merged
 
 
-def is_undercut_suspicious(row, trusted, ratio=3.0):
+def is_undercut_suspicious(row, trusted, ratio=10.0):
     """크라우드 행이 신뢰 관측(내 수집기)의 같은 DPS 최전선보다 ratio 배 이상 싸면 의심.
 
     비교는 엑잘 환산이 필요하지만 환율 스냅샷을 여기까지 끌고 오면 결합이 깊어진다 —
@@ -1609,13 +1611,13 @@ def demo():
     assert [r for r in _m if r["name"] == "유저활"][0]["src"] == "user"
     assert merge_harvest(list(_base), rows=[]) == _base            # 빈 응답은 무변화
 
-    # 오염 방어: 신뢰 최전선(내활 100DPS 5div)보다 3배 이상 싼 크라우드 행은 거부
+    # 오염 방어(10배 기준): 명백한 날조만 거부하고 진짜 꿀매물(몇 배 저렴)은 통과
     _poison = [{"id": "P", "name": "조작활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
-                "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+                "price": 0.4, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
     assert "조작활" not in [r["name"] for r in merge_harvest(list(_base), rows=_poison)]
-    _fair = [{"id": "F", "name": "정상활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
-              "price": 2, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
-    assert "정상활" in [r["name"] for r in merge_harvest(list(_base), rows=_fair)]
+    _fair = [{"id": "F", "name": "꿀매물활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
+              "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    assert "꿀매물활" in [r["name"] for r in merge_harvest(list(_base), rows=_fair)]
     # 신뢰 기준점이 없는 화폐/대역은 판단 불가 — 통과 (과잉 차단 방지)
     _nocmp = [{"id": "N", "name": "비교불가활", "pdps": 900, "edps": 0, "aps": 1, "crit": 1,
                "price": 1, "cur": "chaos", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
