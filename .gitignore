@@ -8,3 +8,5 @@ dist/
 *.spec
 감정소데이터/
 collector*.log
+# 수집기 싱글톤 잠금 — PID 담긴 일회성 상태 파일(소스 아님)
+collector.lock
