@@ -234,6 +234,15 @@ def mod_lines(item):
     return out
 
 
+def round1(x):
+    """1자리 반올림 — JS Math.round(x*10)/10 과 글자 단위로 동일한 half-up(DPS 는 항상 >=0).
+    크라우드 harvest.ts 가 Math.round 를 쓰므로, 지문 fp(pdps/edps 포함)가 일치하려면 수집기도
+    같은 방식이어야 한다. Python 내장 round() 는 banker's(round-half-to-even)라 x.x5 정확값
+    (예 224.25=평균피해149.5×aps1.5: round→224.2 vs JS→224.3)에서 갈려, 같은 매물의 relist
+    (새 id·같은 롤)가 서로 다른 지문이 돼 24h 합집합 중복제거를 빠져나갔다(실측 재현)."""
+    return int((x or 0) * 10 + 0.5) / 10
+
+
 def normalize(res):
     item = res.get("item") or {}
     listing = res.get("listing") or {}
@@ -252,8 +261,8 @@ def normalize(res):
     return {
         "id": str(res.get("id") or ""),
         "name": name.strip() or "이름 없음",
-        "pdps": round(pdps or 0, 1),
-        "edps": round(edps or 0, 1),
+        "pdps": round1(pdps),        # half-up — harvest.ts Math.round 과 지문 일치(round1 주석 참고)
+        "edps": round1(edps),
         "aps": to_number(prop(item, r"Attacks per Second", r"초당 공격")) or 0,
         "crit": to_number(prop(item, r"Critical .*Chance", r"치명타")) or 0,
         "price": amount,
@@ -2067,6 +2076,17 @@ def demo():
     assert parse_hotkey("Control + F2") == (0x0002, 0x71, "Ctrl+F2")
     assert parse_hotkey("") is None and parse_hotkey("Ctrl+") is None
     assert parse_hotkey("무슨키") is None and parse_hotkey("F13") is None
+
+    # pdps/edps 반올림은 크라우드 harvest.ts 의 Math.round(x*10)/10(half-up)과 일치해야
+    # 지문(fp) 중복제거가 맞는다. Python round()(banker's)는 x.x5 정확값에서 갈리므로 round1 사용.
+    import math as _m
+    def _js_round1(x):                       # JS Math.round(x*10)/10 (x>=0)
+        return _m.floor((x or 0) * 10 + 0.5) / 10
+    for _x in [2.25, 12.25, 224.25, 227.25, 227.35, 340.85, 0.15, 999.95, 1218.75]:
+        assert round1(_x) == _js_round1(_x), (_x, round1(_x), _js_round1(_x))
+    # banker's 였다면 틀렸을 대표 지점 — 이 수정의 판별력
+    assert round1(224.25) == 224.3 and round(224.25, 1) == 224.2
+    assert round1(None) == 0.0 and round1(0) == 0.0
 
     print("serve.py self-test PASS")
 
