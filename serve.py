@@ -806,7 +806,7 @@ def last_url():
 HARVEST_URL = "https://poe2-bow-harvest.skekdi4561.workers.dev"
 
 
-def merge_harvest(merged, rows=None):
+def merge_harvest(merged, rows=None, verifier=None):
     """크라우드 수집 행을 24시간 합집합에 합류시킨다.
 
     오버레이 앱(poe2-appraiser)은 사용자가 스스로 한 활 가격 검색의 응답을
@@ -850,6 +850,7 @@ def merge_harvest(merged, rows=None):
 
     added = 0
     suspicious = 0
+    unverified = 0
     for r in rows:
         if not isinstance(r, dict) or r.get("fee") is None:
             continue                     # 즉시구매 표시가 없는 행은 미검증 — 안 섞는다
@@ -874,16 +875,61 @@ def merge_harvest(merged, rows=None):
         if is_undercut_suspicious(row, trusted):
             suspicious += 1
             continue
+        # 최전선을 실제로 바꾸는(신뢰 관측보다 싼) 행만 거래소에 진위 확인한다.
+        # 실재하면 진짜 꿀매물이니 살리고, 없으면 날조거나 이미 팔린 것 — 어느 쪽이든
+        # 곡선에 남기면 유령 계단이 된다("싸면 즉시 팔린다"는 시장 원리의 코드화).
+        if verifier and is_undercut_suspicious(row, trusted, ratio=1.0):
+            if not verifier(row):
+                unverified += 1
+                continue
         seen.add((None, row["id"]))
         fps.add(fp(row))
         merged.append(row)
         added += 1
         if len(merged) >= 5000:          # 표본 목표 상한 — frontier O(n log n)이라 여유
             break
-    if added or suspicious:
-        print("     크라우드 수집 합류 +%d개 (합계 %d개, 저가 의심 제외 %d개)"
-              % (added, len(merged), suspicious))
+    if added or suspicious or unverified:
+        print("     크라우드 수집 합류 +%d개 (합계 %d개, 날조 의심 %d, 진위 미확인 %d)"
+              % (added, len(merged), suspicious, unverified))
     return merged
+
+
+# 진위 검증 결과 캐시 — 프로세스 생존 동안 같은 매물을 재조회하지 않는다
+_HARVEST_VERDICTS = {}
+
+
+def make_harvest_verifier(base, league_path, query, budget=8):
+    """최전선 잠식 크라우드 행의 진위를 거래소로 확인하는 검증자를 만든다.
+
+    검증법: 그 행의 DPS 문턱으로 가격순 검색 → 주장한 매물 id 가 결과에 실재하고
+    fetch 한 실제 가격·화폐가 주장과 일치해야 통과. 사이클당 예산(기본 8행)을 두어
+    레이트 리밋을 지킨다 — 예산을 넘긴 행은 검증 못 했으므로 곡선에 안 올린다.
+    """
+    state = {"left": budget}
+
+    def verify(row):
+        vid = row.get("id") or ""
+        if not vid:
+            return False
+        if vid in _HARVEST_VERDICTS:
+            return _HARVEST_VERDICTS[vid]
+        if state["left"] <= 0:
+            return False
+        state["left"] -= 1
+        ok = False
+        try:
+            throttle("search")
+            r = search_min_dps(base, league_path, query,
+                               int(row["pdps"] + row["edps"]))
+            if vid in (r.get("result") or []):
+                fetched = fetch_ids(base, r["id"], [vid])
+                ok = bool(fetched) and fetched[0]["price"] == row["price"]                     and fetched[0]["cur"] == row["cur"]
+        except TradeError as e:
+            print("     진위 확인 실패(%s): %s" % (vid[:12], e))
+        _HARVEST_VERDICTS[vid] = ok
+        return ok
+
+    return verify
 
 
 def is_undercut_suspicious(row, trusted, ratio=10.0):
@@ -1025,7 +1071,7 @@ def collect(url, limit=100):
 
     # 환율을 먼저 뜬다. 곡선의 세로 축척 전체가 여기 걸려 있고, 요청도 훨씬 적어서
     # 문제가 있으면 4분짜리 아이템 수집을 시작하기 전에 드러난다.
-    base, _, league, q0 = resolve_search(url)
+    base, league_path0, league, q0 = resolve_search(url)
     # 사이트가 "즉시 구매 가능 매물만 집계"라고 공언한다 — 저장 검색이 바뀌면 그 문구가
     # 거짓말이 되므로, securable 이 아니면 크게 알린다(수집은 계속한다).
     if (q0.get("status") or {}).get("option") != "securable":
@@ -1060,7 +1106,9 @@ def collect(url, limit=100):
               b["price"], b["cur"], b["rarity"], json.dumps(b["mods"], ensure_ascii=False),
               b.get("cond"), b.get("id")) for b in bows])
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
-    merged = merge_harvest(recent_rows())
+    merged = merge_harvest(
+        recent_rows(),
+        verifier=make_harvest_verifier(base, league_path0, q0))
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
                   "rates": rates, "conds": conds, "bows": merged})
     print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → latest.json"
@@ -1622,6 +1670,21 @@ def demo():
     _nocmp = [{"id": "N", "name": "비교불가활", "pdps": 900, "edps": 0, "aps": 1, "crit": 1,
                "price": 1, "cur": "chaos", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
     assert "비교불가활" in [r["name"] for r in merge_harvest(list(_base), rows=_nocmp)]
+    # 진위 검증: 최전선을 잠식하는(신뢰점보다 싼) 행만 verifier 를 부른다
+    _calls = []
+    _cheap = [{"id": "V", "name": "잠식활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
+               "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    _ok = merge_harvest(list(_base), rows=_cheap,
+                        verifier=lambda r: (_calls.append(r["id"]), True)[1])
+    assert "잠식활" in [r["name"] for r in _ok] and _calls == ["V"], (_calls,)
+    _no = merge_harvest(list(_base), rows=_cheap, verifier=lambda r: False)
+    assert "잠식활" not in [r["name"] for r in _no]                 # 미확인 = 곡선에 안 올림
+    _calls2 = []
+    _pricier = [{"id": "W", "name": "비싼활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
+                 "price": 9, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    merge_harvest(list(_base), rows=_pricier, verifier=lambda r: (_calls2.append(1), True)[1])
+    assert _calls2 == []                       # 최전선을 안 바꾸면 검증 호출 자체가 없다
+
     # 문자열 가격 등 형 변조 행은 조용히 걸러진다 (수집 루프를 죽이면 안 된다)
     _bad = [{"id": "S", "name": "형변조", "pdps": "100", "edps": 0, "aps": 1, "crit": 1,
              "price": "3", "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},
