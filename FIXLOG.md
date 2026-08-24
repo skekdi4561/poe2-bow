@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 18:43 [수집 전략] 사용자 분업 결정 반영: 저-DPS/저가는 크라우드(사용자 가격검색)가, 고-DPS 끝단은 수집기가 전담. THRESHOLDS 상단을 660→780 확장(690/720/750/780 추가) — 실측 DPS>=660 에 125개가 몰려 660 단일 밴드(가격 오름차순 100)로는 비싼 고-DPS 매물 25개가 잘렸음. 각 고-DPS 층은 100개 미만이라 문턱 추가로 통째 수집. self-test PASS, 수집기 재시작.
 - 2026-08-24 18:31 [① recent_rows 24h 합집합 dedup] 발견 없음. (cond,lid) seen-set + 지문 dedup 건전, 회귀 테스트 완비(재등록/겸용활/재관측). [관찰·재조사 불필요] 지문이 가격 제외→롤 동일 다른매물이 가격만 다르면 하나 버려짐, 단 주석대로 Rare 전용 가정(레어 롤 충돌≈0)이고 위젯은 비-Rare 무조건 제외(appraiser:256)·사이트는 rareOnly 체크박스라 곡선 영향 없음. 가격 제외는 재등록 최신가 유지의 의도된 설계.
 - 2026-08-24 18:27 [②③ path.join 전수 스윕] 발견 없음(21·22 수정이 공격표면 전체 커버 확인). HTTP 도달 가능한 path.join(dir,외부입력) 3곳: server.ts:54 GET(22 수정)·file-uploads GET(21 수정)·POST 쓰기(md5+extname 구조상 안전 — extname 은 경로구분자 미포함, 적대 URL 6종 실측 탈출 0). 나머지 path.join(ConfigStore/GameConfig/GameLogWatcher/AppTray/아이콘)은 app.getPath/__dirname/로컬설정 기반 내부경로라 원격 미도달.
 - 2026-08-24 18:08 [② server.ts 정적 서빙] 21회차와 같은 계열 경로조작 발견·수정. 메인 정적 파일 라우트(45행 fs.createReadStream(path.join(__dirname, req.url)))가 /../../.. 로 __dirname(앱 리소스) 탈출(node 실측) — /uploads 만 고치고 이 기본 라우트를 놓쳤음(복제 결함). path.resolve 격리 체크(밖이면 403) 추가, 정상 에셋 경로 해석은 기존과 동일(실측 허용/traversal 차단). 원격 유출은 여전히 localhost+랜덤포트+무CORS 로 막혀 있으나 배포 심층방어. 메인 빌드 OK, 실행 교체 대기.
