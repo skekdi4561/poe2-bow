@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 12:29 [③ 렌더링 XSS] 발견 없음. 크라우드 옵션/이름 문자열이 위젯·사이트에 표시되는 전 경로 점검 — 위젯은 v-html 전무(Vue {} 자동 이스케이프), index.html 은 모든 innerHTML 삽입부에 esc() 적용(shortMod/name/옵션키/data-key). 공격 페이로드 4종(img onerror, script, 마크업 삽입, span 탈출)을 modKey+esc 실제 파이프라인에 통과시켜 전부 &lt; 로 무해화 확인.
 - 2026-08-24 11:50 [① worker 입력검증] 숫자 필드에 상한이 없어 pdps:1e300 같은 값이 통과 → 곡선 DPS 축 파괴(merge_harvest 최종 관문까지 침투 실측). 워커 validRow + serve.py merge 양쪽에 상한(dps 10만/aps 100/crit 100/price 1e9) 추가, fee=0 은 null 처리(fee 게이트 우회 차단). 워커 배포+스모크(거대행 accepted 0, 혼합 1), serve self-test 통과. CORS(*)·body 300KB·slice(60)-before-map·바인드 파라미터는 안전 확인.
 - 2026-08-24 11:30 [② 로컬 프록시 호스트 검증] 업스트림 main/src/proxy.ts 는 견고함 확인(split 추출 host 와 URL 파서 해석이 어긋나는 우회 케이스 7종 실측 — 전부 안전). 실결함은 우리 vite 미리보기 스텁: 호스트 게이트가 `[\w.-]+` 뿐이라 evil.com·169.254.169.254(메타데이터 IP)까지 프록시되던 SSRF(dev 전용) — 공식 거래소 호스트 허용목록으로 잠금, 실서버에서 evil→501/정상→200 실측.
 - 2026-08-24 11:11 [harvest.ts 업로드 경계] 한 검색이 100행을 만들 때 60행 초과분이 queue.clear() 로 소리 없이 유실되던 결함 수정 — 배치(30행)로 나눠 이어 전송, vitest 2종 추가 (빌드 완료, 실행 교체 대기). keepalive 64KB 한도는 실측(행 최대 788B, 60행 47KB)상 미초과라 재현 불가로 기록만 — 배치 30행이 여유폭 2배 확보.
