@@ -41,6 +41,7 @@
 
 Ctrl+D → 게임에 Ctrl+C 대신 입력(키 1회=행동 1회, GGG 규칙 내) → 클립보드 파싱 →
 시장 곡선 위치 판정 → 커서 옆 topmost 팝업(tk). 전부 표준 라이브러리(ctypes+tkinter).
+- 2026-08-24 17:28 [① harvest.ts 재독해] 발견 없음. 13회차 경쟁조건 수정 완결성 재검토: 각 행이 큐 적재 전 normalizeResult 로 league 를 구워 저장→전역 _queue 에 여러 검색 행이 섞여도 무해(근본 수정 확인). _flush 재예약(1s) 중 harvestFetchResults 재호출 시 !flushTimer 가드로 이중예약·행유실·타이머누수 없음. ctx.league(요청시점)+language(수집시점) 이중게이트가 pc-ggg Standard 같은 비-카카오 Standard 를 올바르게 제외.
 - 2026-08-24 17:08 [① worker 청소·배치 경계] 발견 없음. 정적: SELECT-then-INSERT 는 INSERT OR IGNORE 가 진짜 중복제거라 동시요청 안전, slice(60) 이 map 앞이라 대량배열 바운드, 바인드 파라미터로 주입 불가. 동적(라이브,SMOKE): 배치내 동일id/빈배치/rows 비배열/깨진JSON(400)/200개→60상한 5종 크래시·과대작업 없음. within-batch written 카운트 1 차이는 디버그 필드라 미수정.
 - 2026-08-24 16:48 [② focus-overlay 상태머신] 발견 없음. assertOverlayActive/assertGameActive 는 현재 상태로 가드된 멱등 전이 — F7 여닫기+Ctrl+D 섞어 반복해도 상태 안 꼬임(node 시뮬 확인). [관찰·차기 게임실행 시 확인] 위젯 F7 닫기가 focus-game 으로 오버레이 전체를 게임으로 되돌려, 가격창 동시 개방 시 그것도 클릭통과됨 — 단 원본 패턴(가격창도 닫을 때 focus-game, 단일창 포커스 설계)과 일치·우리 회귀 아님, 2위젯 상호작용은 Electron 메인 필요라 이 세션서 재현 불가.
 - 2026-08-24 16:29 [① index.html DOM 생명주기] 발견 없음. partition/staleKept 폴백을 node 로 재현·실측 — 전부 신선/전부 만료(빈화면 대신 매물+경고)/혼합(신선 우선)/데이터 없음(만료와 구분)/t 누락(만료 취급 폴백)/d·p=0(무효 제외) 6종 전부 우아하게 처리. 수집 멈춤 시 빈 화면 고장으로 안 보이는 저하가 정확. (참고: 로컬 8099 는 다른 프로젝트 서빙 중이라 파티션 로직만 격리 검증).
