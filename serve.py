@@ -151,6 +151,26 @@ def throttle(bucket, max_wait=None):
         LAST_CALL[bucket] = time.time()
 
 
+def _redirect_allowed(newurl):
+    """리다이렉트 대상이 거래소 화이트리스트 안인가. search_api_url 이 최초 요청 호스트를
+    ALLOWED_HOSTS 로 잠그지만, 302 리다이렉트를 그냥 따라가면 그 경계를 우회한다 —
+    거래소 호스트가 점검·차단·MITM 등으로 내부 주소(169.254.169.254·localhost 등)로
+    넘겨도 안 따라가게 대상 호스트도 같은 화이트리스트로 검사한다."""
+    return urlparse(newurl).hostname in ALLOWED_HOSTS
+
+
+class HostLockedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _redirect_allowed(newurl):
+            raise urllib.error.URLError(
+                "허용되지 않은 리다이렉트 대상: %s" % urlparse(newurl).hostname)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+# 거래소 요청은 리다이렉트 호스트까지 잠근 오프너로만 나간다(기본 urlopen 은 무검증으로 따라간다).
+_TRADE_OPENER = urllib.request.build_opener(HostLockedRedirectHandler())
+
+
 def api_get(url, payload=None, _retried=False):
     """payload 를 주면 POST. 거래소는 저장된 검색을 GET 하면 질의문만 돌려주고,
     실제 결과는 그 질의문을 다시 POST 해야 나온다."""
@@ -164,7 +184,7 @@ def api_get(url, payload=None, _retried=False):
     if sess:
         req.add_header("Cookie", "POESESSID=" + sess)
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with _TRADE_OPENER.open(req, timeout=20) as r:
             RATE_STATE[bucket_of(url, payload)] = {
                 "rules": r.headers.get("X-Rate-Limit-Ip"),
                 "state": r.headers.get("X-Rate-Limit-Ip-State"),
@@ -1831,6 +1851,19 @@ def demo():
     ok = search_api_url("https://evil.com@poe.kakaogames.com/trade2/search/poe2/L/x")
     assert ok == ("https://poe.kakaogames.com", "/api/trade2/search/poe2/L/x"), ok  # userinfo 위장은 무시
     assert search_api_url("https://www.pathofexile.com/trade2/search/poe2/Standard/xy")[0]         == "https://www.pathofexile.com"
+
+    # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
+    assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
+    assert _redirect_allowed("https://poe.kakaogames.com/api/trade2/search/poe2/L")
+    for bad_dest in ("http://169.254.169.254/latest/meta-data/", "http://localhost:8731/api/trade",
+                     "http://127.0.0.1/", "https://www.pathofexile.com.evil.com/x",
+                     "https://evil.com/trade2/search"):
+        assert not _redirect_allowed(bad_dest), bad_dest
+    try:                                    # 핸들러가 허용 밖 대상엔 URLError 를 던지는지(raise 가 super 앞)
+        HostLockedRedirectHandler().redirect_request(None, None, 302, "", {}, "http://169.254.169.254/")
+        assert False, "허용되지 않은 리다이렉트가 통과됨"
+    except urllib.error.URLError:
+        pass
 
     # 조건 검색이 사용자의 저장된 옵션 조건을 지우면 안 된다 (기준 곡선과 다른 집단이 된다)
     saved_q = {"filters": {"type_filters": {"filters": {"rarity": {"option": "rare"}}}},
