@@ -426,9 +426,24 @@ PRIORITY_STATS = [
     ("explicit.stat_2694482655", "치명타 피해 보너스 +{}%",   [20, 30]),  #   535개
     ("explicit.stat_1202301673", "모든 투사체 스킬 레벨 +{}",  [1, 2]),    # 1,557개
     ("explicit.stat_803737631",  "정확도 +{}",              [100]),
-    # 라벨은 실제 옵션 문구 그대로 써야 한다 — "생명력 흡수 #%" 는 거래소에 없는 문구다
-    ("explicit.stat_2557965901", "물리 공격 피해의 {}%를 생명력으로 흡수", [6]),
+    # 라벨은 실제 옵션 문구 그대로 써야 한다 — "생명력 흡수 #%" 는 거래소에 없는 문구다.
+    # 이 leech stat 은 같은 표시 문구에 내부 mod 가 둘이라 trade id 도 둘이다(EE2 카탈로그
+    # renderer/public/data/ko/stats.ndjson 확인). 하나만 쓰면(예전 2557965901 단독) 시장 활이
+    # 다른 id 를 써서 sweep 이 매 밴드 0건이 됐다 — 3일간 leech 조건 곡선이 통째로 비어 있었음.
+    # 다중 id 는 EE2(pathofexile-trade.ts 1216~1223)처럼 count 그룹으로 OR 검색한다.
+    (["explicit.stat_2557965901", "explicit.stat_55876295"],
+     "물리 공격 피해의 {}%를 생명력으로 흡수", [6]),
 ]
+
+
+def cond_stat_filter(cid, minv):
+    """조건 하나를 거래소 stats 필터 한 덩어리로 만든다. id 가 리스트(다중 id stat)면
+    EE2 처럼 count 그룹으로 OR 검색(하나라도 min 이상이면 매치), 단일 id 면 and 그룹.
+    거래소 값은 표시값 그대로다(EE2 getMinMax 무변환 확인 — permyriad 변환 안 함)."""
+    if isinstance(cid, (list, tuple)):
+        return {"type": "count", "value": {"min": 1},
+                "filters": [{"id": i, "value": {"min": minv}} for i in cid]}
+    return {"type": "and", "filters": [{"id": cid, "value": {"min": minv}}]}
 
 # 카탈로그는 "+"를 안 쓰고(민첩 #), 음수 옵션도 증가로 적는다(아이템은 감소로 표시)
 _MARKUP = re.compile(r"\[([^\]|]*)\|([^\]]*)\]")
@@ -537,13 +552,14 @@ def pick_conditions(bows, cat):
 
     out, used = [], set()
     for sid, label, steps in PRIORITY_STATS:              # 1) 구매자 우선 옵션
+        key_id = sid[0] if isinstance(sid, (list, tuple)) else sid  # by_id/used 는 해시 가능 대표 id
         for v in steps:
             # key 는 반드시 mod_key 를 통과시킨다. 안 그러면 "치명타 확률 +#%" 를 내보내는데
             # 실제 옵션 key 는 "치명타 확률 #%" 라서, 페이지가 측정/표본을 같은 옵션으로 못 묶는다.
             out.append({"id": sid, "label": label.format(("%g" % v)) + " 이상",
                         "key": mod_key(label.format("#")), "min": v,
-                        "n": len(by_id.get(sid, ("", []))[1]), "why": "우선"})
-        used.add(sid)
+                        "n": len(by_id.get(key_id, ("", []))[1]), "why": "우선"})
+        used.add(key_id)
     if len(out) >= COND_MODS:
         return out[:COND_MODS]
     for key, vals in sorted(seen.items(), key=lambda kv: -len(kv[1])):   # 2) 나머지는 빈도순
@@ -574,8 +590,7 @@ def sweep_condition(base, league_path, query, cond):
         # 기준 곡선(그 조건을 그대로 둔 채 검색)과 **다른 집단**을 재게 되어, 비교 자체가
         # 성립하지 않고 조건 곡선이 기준보다 싸게 나오는 모순까지 생긴다.
         # 우리 조건은 기존 묶음에 한 덩어리로 덧붙인다.
-        q["stats"] = list(q.get("stats") or []) + [
-            {"type": "and", "filters": [{"id": cond["id"], "value": {"min": cond["min"]}}]}]
+        q["stats"] = list(q.get("stats") or []) + [cond_stat_filter(cond["id"], cond["min"])]
         throttle("search")
         r = api_get(base + league_path, {"query": q, "sort": {"price": "asc"}})
         ids = (r.get("result") or [])[:1]
@@ -1428,6 +1443,21 @@ def demo():
         assert emitted == mod_key(emitted), (_label, emitted)      # 이미 정규형이어야 함
         assert "+#" not in emitted, (_label, emitted)              # 부호가 남으면 안 됨
     assert mod_key("치명타 확률 +#%") == "치명타 확률 #%"
+
+    # cond_stat_filter: 단일 id 는 and 그룹, 다중 id(leech 처럼)는 count 그룹으로 OR — EE2 정합.
+    # 단일 id 하드코딩이 leech 조건 곡선을 3일간 0건으로 만든 결함의 재발 가드.
+    assert cond_stat_filter("explicit.stat_X", 6) == {
+        "type": "and", "filters": [{"id": "explicit.stat_X", "value": {"min": 6}}]}
+    _cg = cond_stat_filter(["explicit.stat_A", "explicit.stat_B"], 6)
+    assert _cg["type"] == "count" and _cg["value"] == {"min": 1}
+    assert [f["id"] for f in _cg["filters"]] == ["explicit.stat_A", "explicit.stat_B"]
+    assert all(f["value"] == {"min": 6} for f in _cg["filters"])
+    # leech 우선옵션이 다중 id 로 등록돼 pick_conditions 가 리스트 id 로도 안 죽고,
+    # 그 조건이 count 그룹(두 id)을 만드는지 — 실제 PRIORITY_STATS 엔트리로 확인
+    _leech = next(c for c in pick_conditions(fake, cat)
+                  if isinstance(c["id"], list) and "흡수" in c["label"])
+    assert cond_stat_filter(_leech["id"], _leech["min"])["type"] == "count"
+    assert len(cond_stat_filter(_leech["id"], _leech["min"])["filters"]) == 2
     assert {c["key"] for c in picked} >= {"치명타 확률 #%"}, picked
     assert all("key" in c for c in picked)
 
