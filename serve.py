@@ -1266,6 +1266,24 @@ def collect(url, limit=100):
     return len(bows)
 
 
+def dedup_by_cond_id(rows):
+    """밴드+조건 스윕엔 같은 (조건,id) 매물이 여러 번 들 수 있다 — 한 매물이 여러 DPS
+    문턱의 최저가면 sweep_condition 이 문턱마다 [:1] 로 되뽑기 때문. 활 경로는
+    merge_harvest 가 (cond,id) 로 이걸 접지만 무기 경로는 그 기계장치를 안 쓰므로,
+    여기서 같은 키로 접어 표본 중복 계수(및 곡선 위 겹친 점)를 막는다.
+    id 가 빈 행(비정상 응답)은 서로 다른 매물을 뭉갤 위험이 있어 접지 않는다."""
+    seen, out = set(), []
+    for b in rows:
+        rid = b.get("id")
+        if rid:
+            k = (b.get("cond"), rid)
+            if k in seen:
+                continue
+            seen.add(k)
+        out.append(b)
+    return out
+
+
 def collect_weapon(url, limit, cat_id, suffix):
     """비-활 공격무기 한 종의 현재 시세를 떠서 latest.<suffix>.json 에 쓴다.
 
@@ -1286,6 +1304,7 @@ def collect_weapon(url, limit, cat_id, suffix):
             rows += sweep_condition(b2, league_path, query, c)
     except TradeError as e:
         print("     조건 곡선 건너뜀: %s" % e)
+    rows = dedup_by_cond_id(rows)                 # 활 merge_harvest 의 (cond,id) 접기와 정합
     out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
                   "rates": rates, "conds": conds, "bows": rows, "trend": None,
@@ -2229,6 +2248,20 @@ def demo():
     _sfx = [s for c, s, n in ATTACK_WEAPONS]
     assert len(_sfx) == len(set(_sfx)), "무기 접미사 중복 — latest 파일이 덮어써진다"
     assert sum(1 for s in _sfx if s == "") == 1 and ATTACK_WEAPONS[0][1] == "", "활은 접미사 없이 latest.json"
+
+    # 무기 경로 dedup_by_cond_id: 같은 (cond,id)는 한 번만, 다른 cond/다른 id는 보존,
+    # id 가 비면 접지 않는다(서로 다른 매물을 뭉개면 안 됨) — 활 merge_harvest (cond,id) 정합.
+    _dd = dedup_by_cond_id([
+        {"id": "A", "cond": None, "price": 1},      # 밴드 기본 행
+        {"id": "A", "cond": "치명타 확률 +2% 이상", "price": 3},  # 같은 매물, 다른 조건 → 보존
+        {"id": "A", "cond": "치명타 확률 +2% 이상", "price": 3},  # 조건 스윕이 문턱마다 되뽑음 → 접힘
+        {"id": "B", "cond": None, "price": 2},      # 다른 매물 → 보존
+        {"id": "", "cond": None, "price": 5},       # 빈 id 둘은 서로 달라도 접지 말 것
+        {"id": "", "cond": None, "price": 6},
+    ])
+    assert len(_dd) == 5, [r["price"] for r in _dd]
+    assert [r["price"] for r in _dd] == [1, 3, 2, 5, 6]  # 순서 유지, 중복 3 하나만 제거
+    assert dedup_by_cond_id([]) == []
 
     print("serve.py self-test PASS")
 
