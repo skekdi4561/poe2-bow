@@ -749,6 +749,13 @@ def load_trade(page_url, limit):
 # 나중에 누가 여기 둘 파일까지 브라우저로 새어 나간다.
 SERVED = {"/", "/index.html", "/latest.json", "/favicon.ico", "/favicon.png", "/og.png",
           "/poe2-bow-harvester.user.js"}   # 채집기 설치 링크용 (Tampermonkey 가 .user.js 를 감지)
+# 무기별 곡선 파일(latest.<접미사>.json)도 내보낸다. 화이트리스트는 ATTACK_WEAPONS 의 알려진
+# 접미사로 잠근다 — 임의 파일명(latest.evil.json)이나 캐스터는 못 새어 나간다.
+WEAPON_LATEST = {"/latest.%s.json" % s for _c, s, _n in ATTACK_WEAPONS if s}
+
+
+def served_path(path):
+    return path in SERVED or path in WEAPON_LATEST
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -783,7 +790,7 @@ class Handler(SimpleHTTPRequestHandler):
         # 공격자 Host 로도 200). 본문은 안 나가지만 파일 존재·크기가 새고 리바인딩 방어가 뚫린다.
         if not self.local_only():
             return
-        if urlparse(self.path).path not in SERVED:
+        if not served_path(urlparse(self.path).path):
             return self.send_json(404, {"error": "없는 경로입니다"})
         return super().do_HEAD()
 
@@ -807,7 +814,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:                       # 예상 못 한 응답 형태까지 화면에 보이게
                 return self.send_json(200, {"error": "%s: %s" % (type(e).__name__, e)})
             return self.send_json(200, {"bows": bows, "total": total, "skipped": skipped})
-        if path not in SERVED:
+        if not served_path(path):
             return self.send_json(404, {"error": "없는 경로입니다"})
         return super().do_GET()
 
@@ -1573,6 +1580,12 @@ def demo():
         assert (h.denied is None) is ok
 
     assert "/latest.json" in SERVED and "/snapshots.db" not in SERVED
+    # 무기별 곡선 파일은 알려진 접미사만 서빙하고, 캐스터/임의 파일은 막는다.
+    assert served_path("/latest.json") and served_path("/index.html")
+    assert served_path("/latest.crossbow.json") and served_path("/latest.warstaff.json")
+    assert not served_path("/latest.wand.json")     # 캐스터 접미사는 목록에 없음
+    assert not served_path("/latest.evil.json") and not served_path("/snapshots.db")
+    assert not served_path("/latest..json")          # 활은 SERVED 의 /latest.json 이지 빈 접미사 파일이 아님
 
     # 로그 필터가 문자열이 아닌 인자에 터지면 send_error 가 응답을 못 쓰고 연결이 끊긴다
     from http import HTTPStatus

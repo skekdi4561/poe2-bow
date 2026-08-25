@@ -237,11 +237,17 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 <div id="fail">계산 자체 검증 실패 — 결과를 믿지 마세요.</div>
 
 <header>
-  <h1>활 <span class="mark">시세 감정소</span></h1>
+  <h1><span id="weapon-name">활</span> <span class="mark">시세 감정소</span></h1>
   <p>원하는 옵션을 조건으로 걸고, 그 조건이 가격 곡선을 얼마나 밀어올리는지 봅니다. 조건 하나에 값이 두 배로 뛴다면 그 옵션은 포기하는 게 가성비입니다.</p>
   <p class="hint">모든 시세는 <strong>즉시 구매 가능 매물만</strong> 집계합니다 — 귓속말을 안 받는 가격 조작 매물이 곡선에 못 들어옵니다.</p>
   <p class="updated" id="updated"></p>
 </header>
+
+<div class="card" id="weapon-card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+  <label for="weapon" style="font-weight:600">무기 종류</label>
+  <select id="weapon" aria-label="무기 종류"></select>
+  <span class="hint" id="weapon-note" style="margin:0">캐스터(완드·셉터·스태프)는 주문 옵션이 값을 정해 DPS 곡선과 무관하므로 제외합니다.</span>
+</div>
 
 <div class="card">
   <div class="loadbar" id="loadbar">
@@ -1545,28 +1551,81 @@ $('trade-go').addEventListener('click', async () => {
 })();
 
 /* ---------- 미리 떠둔 스냅샷 ---------- */
-// 수집기(serve.py --collect)가 매시간 써두는 latest.json 을 열자마자 읽는다.
-// 있으면 따로 조회할 필요가 없고, 한 시점에서 통째로 뜬 것이라 시점이 섞일 수도 없다.
-async function loadSnapshot(){
+// 수집기(serve.py --collect --weapons)가 무기마다 latest.<접미사>.json 을 써둔다.
+// 활은 접미사 없이 latest.json (기존 파이프라인 그대로 — 수동 로드·채집기까지 합류).
+// 순서·접미사·표시명은 serve.py 의 ATTACK_WEAPONS 와 같아야 한다.
+const WEAPONS = [
+  { suffix: '',         label: '활' },
+  { suffix: 'crossbow', label: '쇠뇌' },
+  { suffix: 'onesword', label: '한손 검' },
+  { suffix: 'twosword', label: '양손 검' },
+  { suffix: 'oneaxe',   label: '한손 도끼' },
+  { suffix: 'twoaxe',   label: '양손 도끼' },
+  { suffix: 'onemace',  label: '한손 철퇴' },
+  { suffix: 'twomace',  label: '양손 철퇴' },
+  { suffix: 'spear',    label: '창' },
+  { suffix: 'flail',    label: '플레일' },
+  { suffix: 'claw',     label: '클로' },
+  { suffix: 'dagger',   label: '단검' },
+  { suffix: 'warstaff', label: '쿼터스태프' },
+];
+const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
+
+(function weaponSelfTest(){
   try {
-    const r = await fetch('latest.json', { cache: 'no-store' });
-    if (!r.ok) return;
+    if (weaponFile('') !== 'latest.json') throw new Error('weaponFile 활은 latest.json');
+    if (weaponFile('crossbow') !== 'latest.crossbow.json') throw new Error('weaponFile 접미사');
+    if (WEAPONS[0].suffix !== '' || WEAPONS[0].label !== '활') throw new Error('WEAPONS 활 먼저·빈 접미사');
+    if (new Set(WEAPONS.map(w => w.suffix)).size !== WEAPONS.length) throw new Error('WEAPONS 접미사 중복');
+    // 캐스터(정확히 wand/sceptre/staff)는 제외 — warstaff 는 공격무기라 포함돼야 한다
+    if (WEAPONS.some(w => ['wand', 'sceptre', 'staff'].includes(w.suffix))) throw new Error('WEAPONS 캐스터 포함');
+    if (!WEAPONS.some(w => w.suffix === 'warstaff')) throw new Error('WEAPONS 쿼터스태프 누락');
+  } catch (e) { console.error(e); $('fail').style.display = 'block'; }
+})();
+
+// 한 시점에 통째로 뜬 스냅샷이라 시점이 섞일 수 없다. isBow 면 지난 스냅샷만 갈아끼우고
+// 수동·채집 행은 남긴다(+localStorage 저장). 다른 무기는 뷰 전용 — 활 저장분을 안 건드린다.
+async function loadSnapshot(file, isBow){
+  try {
+    const r = await fetch(file, { cache: 'no-store' });
+    if (!r.ok) return false;
     const d = await r.json();
-    if (!d.bows || !d.bows.length) return;
+    if (!d.bows || !d.bows.length) return false;
     snapRates = d.rates || {};                          // 수집기가 떠온 환율을 같이 받는다
     snapConds = d.conds || [];
     // 사라진 조건 라벨은 buildConds() 가 다시 그릴 때 선택에서 걷어낸다
-    bows = bows.filter(b => !b.snap)                    // 지난 스냅샷은 버리고 새것으로 갈아끼운다
-      .concat(d.bows.map(b => Object.assign({ snap: true, t: d.taken_at }, b)));
-    save(); refresh();
+    const fresh = d.bows.map(b => Object.assign({ snap: true, t: d.taken_at }, b));
+    if (isBow) { bows = bows.filter(b => !b.snap).concat(fresh); save(); }
+    else { bows = fresh; }                              // 저장 안 함 — 활 데이터 보존
+    refresh();
     status(`미리 떠둔 시세 ${d.bows.length}개 · ${timeStr(d.taken_at)} 기준`);
-  } catch (e) { /* 스냅샷이 없으면 직접 불러오면 된다 */ }
+    return true;
+  } catch (e) { return false; }                         // 스냅샷이 없으면 직접 불러오면 된다
+}
+
+let curWeapon = '';
+async function selectWeapon(suffix){
+  curWeapon = suffix;
+  const w = WEAPONS.find(x => x.suffix === suffix) || WEAPONS[0];
+  $('weapon-name').textContent = w.label;
+  if (suffix === '') {                                  // 활: 저장분 복원 + 스냅샷 + 채집기
+    bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object');
+    refresh();
+    await loadSnapshot('latest.json', true);
+    const n = loadHarvest();
+    if (n) { save(); refresh(); status(`거래소에서 직접 주운 매물 ${n}개를 합쳐 보는 중 (채집기)`); }
+    return;
+  }
+  const ok = await loadSnapshot(weaponFile(suffix), false);
+  if (!ok) { bows = []; refresh(); status(`${w.label} 시세는 아직 수집되지 않았습니다 — 곧 채워집니다.`); }
 }
 
 $('unit').value = unit;
-refresh();
-loadSnapshot().then(() => {
-  const n = loadHarvest();
-  if (n) { save(); refresh(); status(`거래소에서 직접 주운 매물 ${n}개를 합쳐 보는 중 (채집기)`); }
+WEAPONS.forEach(w => {                                  // 드롭다운 채우기
+  const o = document.createElement('option');
+  o.value = w.suffix; o.textContent = w.label; $('weapon').appendChild(o);
 });
+$('weapon').addEventListener('change', e => selectWeapon(e.target.value));
+refresh();
+selectWeapon('');                                       // 활로 시작 (기존 동작 그대로)
 </script>
