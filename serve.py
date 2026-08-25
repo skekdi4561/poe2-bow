@@ -636,10 +636,45 @@ def resolve_search(page_url):
     return base, league_path, league, query
 
 
-def load_banded(page_url, per_band):
+# 공격 무기 카테고리 — 거래소 type_filters.filters.category.option 값(EE2 CATEGORY_TO_TRADE_ID 확인).
+# 캐스터(완드/셉터/스태프)는 뺀다: 시장이 주문 모드로 값을 매겨 공격 DPS 곡선이 성립하지 않는다.
+# (id, 파일 접미사, 표시명). 활은 접미사 없이 latest.json(기존 파이프라인 그대로).
+ATTACK_WEAPONS = [
+    ("weapon.bow",       "",         "활"),
+    ("weapon.crossbow",  "crossbow", "쇠뇌"),
+    ("weapon.onesword",  "onesword", "한손 검"),
+    ("weapon.twosword",  "twosword", "양손 검"),
+    ("weapon.oneaxe",    "oneaxe",   "한손 도끼"),
+    ("weapon.twoaxe",    "twoaxe",   "양손 도끼"),
+    ("weapon.onemace",   "onemace",  "한손 철퇴"),
+    ("weapon.twomace",   "twomace",  "양손 철퇴"),
+    ("weapon.spear",     "spear",    "창"),
+    ("weapon.flail",     "flail",    "플레일"),
+    ("weapon.claw",      "claw",     "클로"),
+    ("weapon.dagger",    "dagger",   "단검"),
+    ("weapon.warstaff",  "warstaff", "쿼터스태프"),
+]
+CASTER_CATEGORIES = {"weapon.wand", "weapon.sceptre", "weapon.staff"}
+
+
+def with_category(query, cat_id):
+    """검색 질의의 무기 카테고리 필터를 cat_id 로 바꾼 사본을 만든다 — 저장된 검색이 활로
+    잠겨 있어도 다른 공격무기로 재조준한다. DPS 밴딩·정렬·가격 필터는 무기 무관이라 그대로.
+    (거래소 경로는 EE2 pathofexile-trade.ts 의 type_filters.filters.category.option 과 동일.)"""
+    import copy
+    q = copy.deepcopy(query)
+    q.setdefault("filters", {}).setdefault("type_filters", {}) \
+     .setdefault("filters", {})["category"] = {"option": cat_id}
+    return q
+
+
+def load_banded(page_url, per_band, category=None):
     """DPS 문턱값을 훑는다. "dps >= T 중 최저가"가 곧 최전선 위의 점이다.
-    한 번의 검색은 id 를 100개까지만 주므로 구간을 안 나누면 표본이 시장 바닥에만 몰린다."""
+    한 번의 검색은 id 를 100개까지만 주므로 구간을 안 나누면 표본이 시장 바닥에만 몰린다.
+    category 를 주면 저장된 검색을 그 무기로 재조준한다(기본값 None = 저장된 검색 그대로)."""
     base, league_path, league, query = resolve_search(page_url)
+    if category:
+        query = with_category(query, category)
 
     out, seen, total, skipped = [], set(), 0, 0
     for lo in THRESHOLDS:
@@ -1224,6 +1259,37 @@ def collect(url, limit=100):
     return len(bows)
 
 
+def collect_weapon(url, limit, cat_id, suffix):
+    """비-활 공격무기 한 종의 현재 시세를 떠서 latest.<suffix>.json 에 쓴다.
+
+    활(collect)과 달리 24h 합집합·크라우드 병합·추세는 아직 안 붙인다 — 그 기계장치
+    (bows 테이블/recent_rows/merge_harvest/build_trend)가 활 전용이라, 여기 끌어들이면
+    무기가 섞인다. 현재 스냅샷 곡선만 쓴다. 환율은 무기 무관이라 그대로 공유한다."""
+    taken = int(time.time() * 1000)
+    base, league_path0, league, q0 = resolve_search(url)
+    rates = guard_rates(fetch_rates(base, league, TRADE_CURRENCIES), rate_memory())
+    rows, total, skipped, base, league = load_banded(url, limit, category=cat_id)
+    conds = []
+    try:
+        b2, league_path, _, query = resolve_search(url)
+        query = with_category(query, cat_id)
+        cat = stat_catalog(b2)
+        conds = pick_conditions(rows, cat)
+        for c in conds:
+            rows += sweep_condition(b2, league_path, query, c)
+    except TradeError as e:
+        print("     조건 곡선 건너뜀: %s" % e)
+    out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
+    write_latest({"taken_at": taken, "total": total, "skipped": skipped,
+                  "rates": rates, "conds": conds, "bows": rows, "trend": None,
+                  "category": cat_id}, out_path)
+    print("[%s] %s(%s) 수집 %d개 → latest.%s.json"
+          % (time.strftime("%H:%M:%S"), suffix, cat_id, len(rows), suffix))
+    if "--push" in sys.argv:
+        push_latest(path=out_path)
+    return len(rows)
+
+
 def bootstrap_latest():
     """갓 설치한 프로그램도 열자마자 곡선이 보이게 — 시세가 없을 때만 공개 사이트에서 받아온다.
     거래소가 아니라 우리 사이트(github.io)를 부르는 것이라 레이트 리밋과 무관하다."""
@@ -1242,14 +1308,15 @@ def bootstrap_latest():
         print("공유 시세 받기 실패(무시하고 계속): %s" % e)
 
 
-def push_latest(cwd=None):
-    """--push: 수집 뒤 latest.json 을 저장소로 밀어 올린다 = 공개 페이지 갱신.
-    실패해도 수집은 계속 돈다 — 푸시는 배포일 뿐 수집이 아니다."""
+def push_latest(cwd=None, path=None):
+    """--push: 수집 뒤 시세 파일을 저장소로 밀어 올린다 = 공개 페이지 갱신.
+    실패해도 수집은 계속 돈다 — 푸시는 배포일 뿐 수집이 아니다.
+    path 를 주면 그 파일(무기별 latest.<x>.json)만 add 한다(기본: latest.json)."""
     import subprocess
     def run(*cmd):
         return subprocess.run(cmd, cwd=cwd or ROOT, capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
-    run("git", "add", "latest.json")
+    run("git", "add", os.path.basename(path) if path else "latest.json")
     c = run("git", "commit", "-m", "시세 갱신 " + time.strftime("%Y-%m-%d %H:%M"))
     if c.returncode != 0:
         out = (c.stdout or "") + (c.stderr or "")
@@ -1341,10 +1408,23 @@ def release_collector_lock():
         pass
 
 
-def collect_loop(url, every, limit):
+def collect_loop(url, every, limit, weapons=False):
+    """weapons=True 면 사이클마다 공격무기를 하나씩 순환 수집한다(캐스터 제외).
+    요청량을 1x 로 유지하려는 것 — 여러 무기를 동시에 뜨면 레이트 리밋 위험(싱글톤 잠금과 같은 이유).
+    각 무기는 len(ATTACK_WEAPONS) 사이클마다 갱신된다. 활(접미사 빈 문자열)은 기존 전체 파이프라인."""
+    idx = 0
     while True:
         try:
-            collect(url, limit)
+            if weapons:
+                cat_id, suffix, name = ATTACK_WEAPONS[idx % len(ATTACK_WEAPONS)]
+                idx += 1
+                print("[%s] 순환 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
+                if suffix:
+                    collect_weapon(url, limit, cat_id, suffix)
+                else:
+                    collect(url, limit)      # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
+            else:
+                collect(url, limit)
         except TradeError as e:
             print("[%s] 수집 실패: %s" % (time.strftime("%H:%M:%S"), e))
         except Exception as e:                  # 한 번 실패했다고 루프까지 죽으면 안 된다
@@ -2121,6 +2201,22 @@ def demo():
     assert round1(224.25) == 224.3 and round(224.25, 1) == 224.2
     assert round1(None) == 0.0 and round1(0) == 0.0
 
+    # 무기 확장: with_category 는 카테고리 필터만 바꾸고 원본을 안 건드린다(deepcopy).
+    _q = {"filters": {"equipment_filters": {"filters": {"dps": {"min": 500}}}},
+          "status": {"option": "securable"}}
+    _wq = with_category(_q, "weapon.onesword")
+    assert _wq["filters"]["type_filters"]["filters"]["category"] == {"option": "weapon.onesword"}
+    assert _wq["filters"]["equipment_filters"]["filters"]["dps"] == {"min": 500}  # 다른 필터 보존
+    assert _wq["status"] == {"option": "securable"}                                # 상태 보존
+    assert "type_filters" not in _q["filters"]                                     # 원본 불변
+    # ATTACK_WEAPONS 는 캐스터를 절대 안 담고, 전부 weapon.* 이며, 접미사는 유일하고 활만 빈 접미사.
+    _ids = [c for c, s, n in ATTACK_WEAPONS]
+    assert all(i.startswith("weapon.") for i in _ids)
+    assert not (set(_ids) & CASTER_CATEGORIES), "캐스터가 공격무기 목록에 샜다"
+    _sfx = [s for c, s, n in ATTACK_WEAPONS]
+    assert len(_sfx) == len(set(_sfx)), "무기 접미사 중복 — latest 파일이 덮어써진다"
+    assert sum(1 for s in _sfx if s == "") == 1 and ATTACK_WEAPONS[0][1] == "", "활은 접미사 없이 latest.json"
+
     print("serve.py self-test PASS")
 
 
@@ -2497,8 +2593,13 @@ if __name__ == "__main__":
                      "2배로 만들어 레이트 리밋 위험이 있어 종료합니다. "
                      "정말 새로 띄우려면 먼저 그 프로세스를 끄거나 %s 를 지우세요."
                      % (running, LOCK_FILE))
+        weapons = "--weapons" in sys.argv       # 공격무기 순환 수집(캐스터 제외, 사이클당 1종)
         if every:
-            collect_loop(url, max(600, int(every)), limit)   # 10분보다 자주는 안 뜬다
+            collect_loop(url, max(600, int(every)), limit, weapons=weapons)   # 10분보다 자주는 안 뜬다
+        elif weapons:
+            # 1회 실행 시엔 활 하나만(순환은 --every 와 함께 의미). 다른 무기는 --category 없이도
+            # 순환 루프로만 도는 게 안전하다(레이트 리밋).
+            collect(url, limit)
         else:
             collect(url, limit)
         sys.exit(0)
