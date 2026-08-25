@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         POE2 활 시세 채집기
 // @namespace    poe2-bow-appraiser
-// @version      0.1.0
+// @version      0.1.1
 // @description  거래소에서 이미 보고 있는 활 매물을 주워 '활 시세 감정소'로 흘려보낸다. 추가 요청 0.
 // @match        https://poe.kakaogames.com/trade2/*
 // @match        https://www.pathofexile.com/trade2/*
@@ -83,9 +83,15 @@
     // 길이 상한: 페이지 세계는 신뢰할 수 없다(다른 스크립트가 가짜 이벤트를 쏠 수 있다).
     // 거대한 문자열로 GM 저장소·감정소 localStorage 를 부풀리는 것을 막는다.
     var mods = [];
-    (item.implicitMods || []).concat(item.explicitMods || []).forEach(function (m) {
-      var t = typeof m === 'string' ? m : (m && typeof m.description === 'string' ? m.description : null);
-      if (t !== null && mods.length < 40) mods.push(t.slice(0, 200));
+    // serve.py MOD_KEYS / harvest.ts modLines 와 같은 7개 키·같은 순서로 뽑아야 지문(fp)이
+    // 일치한다. 예전엔 implicit+explicit 2개만 떠서, 룬/제작/균열 모드가 붙은 활(룬 소켓은
+    // 흔하다)의 fp 가 수집기·오버레이 크라우드와 달라져 relist 중복제거를 빠져나갔다.
+    ['implicitMods', 'explicitMods', 'runeMods', 'craftedMods',
+     'fracturedMods', 'enchantMods', 'desecratedMods'].forEach(function (key) {
+      (item[key] || []).forEach(function (m) {
+        var t = typeof m === 'string' ? m : (m && typeof m.description === 'string' ? m.description : null);
+        if (t !== null && mods.length < 40) mods.push(t.slice(0, 200));
+      });
     });
     return {
       id: String(res.id || ''),
@@ -242,6 +248,13 @@
     assert(r.aps === 1.42 && r.crit === 6.5, 'aps/crit 추출');
     assert(r.cur === 'divine' && r.price === 5 && r.rarity === 'Rare', '가격/등급');
     assert(r.mods.length === 2 && r.mods[0] === '모든 스킬 레벨 +1', '옵션(문자열+description) 합침');
+    // 7개 mod 키를 serve.py MOD_KEYS 와 같은 순서로 뽑아야 지문(fp) 일치 — 룬/제작 포함(mods 는 raw)
+    var runed = mut(['item', 'runeMods'], ['룬 피해 +10']);
+    runed.item.craftedMods = ['제작 생명력 +50'];
+    var rr = normalizeRow(runed, null);
+    assert(JSON.stringify(rr.mods) === JSON.stringify(
+      ['모든 스킬 레벨 +1', '[Physical|물리] 피해 168% 증가', '룬 피해 +10', '제작 생명력 +50']),
+      '7키 추출·순서(implicit→explicit→rune→crafted, serve.py MOD_KEYS 정합)');
     var big = mut(['item', 'explicitMods'], Array(200).fill(Array(9999).join('가')));
     var br = normalizeRow(big, null);
     assert(br.mods.length <= 40 && br.mods[0].length <= 200, '옵션 길이 상한');
