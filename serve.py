@@ -1,4 +1,4 @@
-"""활 시세 감정소 로컬 실행기.
+"""공격 무기 시세 감정소 로컬 실행기.
 
     python serve.py
 
@@ -1052,7 +1052,7 @@ def last_url():
     return row[0] if row else None
 
 
-# 크라우드 수집 수합 서버 (오버레이 앱 사용자들의 검색 응답에서 나온 활 매물).
+# 크라우드 수집 수합 서버 (오버레이 앱 사용자들의 검색 응답에서 나온 무기 매물).
 # 빈 문자열이면 합류 기능이 통째로 꺼진다.
 HARVEST_URL = "https://poe2-bow-harvest.skekdi4561.workers.dev"
 
@@ -2987,7 +2987,7 @@ if __name__ == "__main__":
             collect(url, limit)
         sys.exit(0)
     url = "http://localhost:%d/" % PORT
-    print("활 시세 감정소 → %s   (Ctrl+C 로 종료)" % url)
+    print("공격 무기 시세 감정소 → %s   (Ctrl+C 로 종료)" % url)
     if not os.environ.get("POESESSID"):
         print("참고: POESESSID 미설정 — 거래소가 로그인을 요구하면 위 파일 맨 위 설명을 보세요.")
     bootstrap_latest()

@@ -1,11 +1,11 @@
 <meta charset="utf-8">
-<title>활 시세 감정소</title>
+<title>공격 무기 시세 감정소</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="POE2 활, 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 레어활 가격 곡선.">
+<meta name="description" content="POE2 공격 무기(활·쇠뇌·검·도끼·창 등), 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 가격 곡선.">
 <link rel="icon" href="favicon.png">
 <meta property="og:type" content="website">
-<meta property="og:title" content="활 시세 감정소">
-<meta property="og:description" content="POE2 활 — 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없음, 미리 떠둔 시세만 보여줍니다.">
+<meta property="og:title" content="공격 무기 시세 감정소">
+<meta property="og:description" content="POE2 공격 무기 — 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없음, 미리 떠둔 시세만 보여줍니다.">
 <meta property="og:url" content="https://skekdi4561.github.io/poe2-bow/">
 <meta property="og:image" content="https://skekdi4561.github.io/poe2-bow/og.png">
 <meta property="og:image:width" content="1200">
@@ -261,7 +261,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   </div>
   <p class="hint" id="trade-status" style="margin-top:10px"></p>
   <p class="hint">따로 불러오지 않아도, <a href="poe2-bow-harvester.user.js">채집기(유저스크립트)</a>를
-    설치하면 거래소에서 구경한 활 매물이 자동으로 여기 합쳐집니다 — 추가 요청 0.</p>
+    설치하면 거래소에서 구경한 무기 매물이 자동으로 여기 합쳐집니다 — 추가 요청 0.</p>
 </div>
 
 <div class="card" id="budget-card">
@@ -308,25 +308,25 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   <div class="tablewrap">
     <table>
       <thead><tr>
-        <th>활</th><th>물리</th><th>원소</th><th id="th-dps">총 DPS</th>
+        <th>무기</th><th>물리</th><th>원소</th><th id="th-dps">총 DPS</th>
         <th>DPS 밖 옵션</th><th id="th-price">가격</th><th>DPS 10당</th><th>판정</th><th></th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
   <p class="hint" id="filtered"></p>
-  <div class="empty" id="empty">아직 등록된 활이 없습니다.</div>
+  <div class="empty" id="empty">아직 등록된 무기가 없습니다.</div>
   
 </div>
 
 <div class="minor">
   <details class="card">
     <summary>직접 등록</summary>
-    <p class="hint" style="margin-top:12px">게임에서 활에 커서를 올리고 Ctrl+C → 아래에 붙여넣기. 한국어·영문 클라이언트 둘 다 읽습니다.</p>
+    <p class="hint" style="margin-top:12px">게임에서 무기에 커서를 올리고 Ctrl+C → 아래에 붙여넣기. 한국어·영문 클라이언트 둘 다 읽습니다.</p>
     <label for="paste">아이템 텍스트</label>
     <textarea id="paste" placeholder="아이템 종류: 활&#10;희귀도: 희귀&#10;파멸의 노래&#10;고급 광신도 활&#10;--------&#10;물리 피해: 52-97 (증가됨)&#10;원소 피해: 18-33 (증가됨)&#10;치명타 명중 확률: 6.50%&#10;초당 공격 횟수: 1.42 (증가됨)&#10;--------&#10;치명타 명중 확률 38% 증가"></textarea>
     <div class="row two">
-      <div><label for="f-name">이름</label><input id="f-name" placeholder="활 이름"></div>
+      <div><label for="f-name">이름</label><input id="f-name" placeholder="무기 이름"></div>
       <div><label for="f-aps">초당 공격</label><input id="f-aps" class="num" inputmode="decimal" placeholder="1.42"></div>
     </div>
     <div class="row">
@@ -351,7 +351,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   <details class="card">
     <summary>기준 설정</summary>
     <p class="hint" style="margin-top:12px">빌드에 따라 무엇이 DPS인지 다릅니다 — 물리 스케일링이면 물리 DPS로 보세요.
-      총 DPS는 <strong>물리 + 원소</strong>입니다. 카오스는 활 빌드가 안 쓰므로 세지 않습니다.</p>
+      총 DPS는 <strong>물리 + 원소</strong>입니다. 카오스는 공격 빌드가 안 쓰므로 세지 않습니다.</p>
     <div class="row two">
       <div>
         <label for="metric">비교 기준</label>
@@ -387,7 +387,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 </div>
 
 <footer>
-  DPS는 거래소 표기와 같은 방식(평균 피해 × 초당 공격)으로 계산합니다. 치명타·스킬 레벨·정확도는 그 식에 안 들어가므로 조건 슬라이더로 따로 겁니다. 서포트 젬·패시브·화살통 같은 캐릭터 쪽 배율은 활마다 같으므로 순위를 바꾸지 않습니다. 정확한 최종 딜은 PoB2로 확인하세요.
+  DPS는 거래소 표기와 같은 방식(평균 피해 × 초당 공격)으로 계산합니다. 치명타·스킬 레벨·정확도는 그 식에 안 들어가므로 조건 슬라이더로 따로 겁니다. 서포트 젬·패시브·화살통 같은 캐릭터 쪽 배율은 무기마다 같으므로 순위를 바꾸지 않습니다. 정확한 최종 딜은 PoB2로 확인하세요.
 </footer>
 </div>
 
@@ -1067,7 +1067,7 @@ function render(){
   const baseFront = frontier(base);
 
   // 비어 보이는 이유를 정확히 말한다 — 데이터가 없는 것과 조건이 다 걸러낸 것은 다르다
-  $('empty').textContent = !bows.length ? '아직 등록된 활이 없습니다.'
+  $('empty').textContent = !bows.length ? '아직 등록된 무기가 없습니다.'
     : !base.length ? '지금 비교 기준으로는 DPS가 0인 활뿐입니다. 아래 “기준 설정”을 확인하세요.'
     : '조건에 맞는 활이 없습니다. 문턱값을 낮춰보세요.';
   $('empty').style.display = view.length ? 'none' : '';
