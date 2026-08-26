@@ -300,12 +300,26 @@ def normalize(res):
     }
 
 
-def search_min_dps(base, league_path, query, lo):
-    """dps >= lo 중 가격 오름차순. 첫 결과가 곧 그 문턱값의 최전선 점이다."""
+def search_min_dps(base, league_path, query, lo, sort=None):
+    """dps >= lo 검색. 기본은 가격 오름차순 — 첫 결과가 곧 그 문턱값의 최전선 점이다.
+    sort 를 주면 그대로 쓴다(예: {"dps": "desc"} = DPS 높은 순).
+    """
     import copy
     q = copy.deepcopy(query)
     q.setdefault("filters", {}).setdefault("equipment_filters", {})      .setdefault("filters", {})["dps"] = {"min": lo}
-    return api_get(base + league_path, {"query": q, "sort": {"price": "asc"}})
+    return api_get(base + league_path, {"query": q, "sort": sort or {"price": "asc"}})
+
+
+def search_top_dps(base, league_path, query, lo=None):
+    """DPS 내림차순 검색 = 시장 최상위 매물. 거래소 웹 UI 의 DPS 정렬과 같은 것.
+
+    이게 있어야 "지금 시장 최고가 몇 DPS 인가"를 정확히 알 수 있다. 밴딩만으로는
+    밴드 경계에 걸린 개수(실측 84~128개)만큼 오차가 나고, 리그 주기에 따라 그 지점이
+    계속 움직인다 — 정렬은 그 문제 자체를 없앤다(항상 상위 N 개를 정확히 준다).
+    거래소가 이 정렬을 거부하면 TradeError 가 올라가고 호출부가 밴딩으로 폴백한다.
+    """
+    return search_min_dps(base, league_path, query, lo or THRESHOLDS[0],
+                          sort={"dps": "desc"})
 
 
 def fetch_ids(base, query_id, ids):
@@ -827,6 +841,29 @@ def load_banded(page_url, per_band, category=None):
         query = with_category(query, category)
 
     out, seen, total, skipped = [], set(), 0, 0
+
+    # ① DPS 상위권을 정렬로 정확히 먼저 뜬다(거래소 웹 UI 의 DPS 정렬과 같은 것).
+    #    밴딩만으로는 밴드 경계 때문에 84~128개처럼 어긋나고, 리그가 초기화되면 그
+    #    지점이 날마다 움직인다 — 정렬은 언제나 "지금 시장 상위 N개"를 정확히 준다.
+    #    정렬을 거부하는 서버/리그가 있을 수 있으므로 실패하면 조용히 밴딩만 쓴다.
+    try:
+        throttle("search")
+        rt = search_top_dps(base, league_path, query)
+        top_ids = [i for i in (rt.get("result") or [])[:TOP_CAP]]
+        if top_ids:
+            seen.update(top_ids)
+            top_rows = fetch_ids(base, rt["id"], top_ids)
+            out += top_rows
+            skipped += len(top_ids) - len(top_rows)
+            total = max(total, rt.get("total") or 0)
+            best = max((r["pdps"] + r["edps"] for r in top_rows), default=0)
+            print("     DPS 상위권(정렬): %d개 수집 — 시장 최고 %.0f DPS"
+                  % (len(top_rows), best))
+    except TradeError as e:
+        print("     DPS 정렬 건너뜀(밴딩으로 대체): %s" % e)
+    except Exception as e:
+        print("     DPS 정렬 건너뜀(밴딩으로 대체): %s: %s" % (type(e).__name__, e))
+
     for lo in THRESHOLDS:
         throttle("search")
         r = search_min_dps(base, league_path, query, lo)
@@ -2109,6 +2146,40 @@ def demo():
     finally:
         globals()["api_get"] = _k_api2
         _STAT_CACHE.clear()
+
+    # DPS 정렬 검색: sort 를 그대로 싣고, 거부당하면 밴딩으로 폴백한다.
+    _sent = []
+    _k_api3 = api_get
+    try:
+        globals()["api_get"] = lambda u, payload=None, _retried=False: (
+            _sent.append(payload) or {"id": "q", "total": 5, "result": []})
+        search_top_dps("https://h", "/p", {"filters": {}})
+        assert _sent[-1]["sort"] == {"dps": "desc"}, _sent[-1]["sort"]
+        _dps = _sent[-1]["query"]["filters"]["equipment_filters"]["filters"]["dps"]
+        assert _dps == {"min": THRESHOLDS[0]}, _dps      # 상위권도 최저 문턱은 걸어 잡동사니 배제
+        search_min_dps("https://h", "/p", {"filters": {}}, 600)
+        assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
+    finally:
+        globals()["api_get"] = _k_api3
+    # 거래소가 dps 정렬을 거부해도 수집은 계속돼야 한다(밴딩 폴백)
+    _k_api4, _k_thr4, _k_fetch4 = api_get, throttle, fetch_ids
+    try:
+        _n = {"i": 0}
+        def _reject_sort(u, payload=None, _retried=False):
+            if (payload or {}).get("sort") == {"dps": "desc"}:
+                raise TradeError("거래소 응답 400: unknown sort")
+            _n["i"] += 1
+            return {"id": "q", "total": 7, "result": []}
+        globals()["api_get"] = _reject_sort
+        globals()["throttle"] = lambda b, mw=None: None
+        globals()["fetch_ids"] = lambda *a: []
+        _SEARCH_CACHE.clear()
+        _SEARCH_CACHE["u"] = (("https://h", "/p", "L", {"filters": {}}), time.time())
+        _o, _t, _sk, _b, _lg = load_banded("u", 25)
+        assert _n["i"] == len(THRESHOLDS), "정렬 거부 후 밴딩이 안 돌았다: %d" % _n["i"]
+    finally:
+        globals()["api_get"], globals()["throttle"], globals()["fetch_ids"] = _k_api4, _k_thr4, _k_fetch4
+        _SEARCH_CACHE.clear()
 
     # 상위권 밴드는 시장 total 로 그때그때 판정한다(고정 문턱은 리그 주기에 못 버틴다).
     # POE 는 시즌제라 리그가 초기화되면 상위권 DPS 구간이 날마다 달라진다 — 아래 시나리오는
