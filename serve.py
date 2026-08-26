@@ -11,7 +11,7 @@
 """
 import json, os, re, shutil, sqlite3, sys, threading, time, urllib.error, urllib.request, webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, quote as urlquote
+from urllib.parse import urlparse, parse_qs, quote as urlquote, unquote as urlunquote
 from statistics import median
 
 # 한국어 윈도우 콘솔은 기본이 cp949라 —, ≥ 같은 글자에서 UnicodeEncodeError 로 죽는다.
@@ -415,7 +415,10 @@ def ninja_rates(league, currencies=None):
         1 X = (X.primaryValue / exalted.primaryValue) 엑잘
     """
     try:
-        url = "%s?league=%s&type=Currency" % (NINJA_URL, urlquote(league))
+        # 호출부가 넘기는 league 는 거래소 URL 경로에서 잘라온 것이라 **이미 퍼센트 인코딩**돼
+        # 있다("Runes%20of%20Aldur"). 그대로 다시 quote 하면 %2520 이 되어 poe.ninja 가 빈
+        # lines 를 돌려준다(실측). 먼저 풀고 나서 한 번만 인코딩한다.
+        url = "%s?league=%s&type=Currency" % (NINJA_URL, urlquote(urlunquote(league)))
         req = urllib.request.Request(url, headers={"Accept": "application/json",
                                                    "User-Agent": NINJA_UA})
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -1956,6 +1959,18 @@ def demo():
         def __exit__(self, *a): return False
     _keep_open = urllib.request.urlopen
     try:
+        # ⚠️ 호출부(collect)는 거래소 URL 경로에서 자른 **이미 인코딩된** 리그명을 넘긴다.
+        # 그걸 또 quote 하면 %2520 이 되어 poe.ninja 가 빈 lines 를 준다(실사고).
+        _seen_url = []
+        urllib.request.urlopen = lambda req, timeout=None: (
+            _seen_url.append(req.full_url), _FakeResp(_ninja_payload))[1]
+        ninja_rates("Runes%20of%20Aldur")               # 수집기가 실제로 넘기는 형태
+        assert "%2520" not in _seen_url[0], _seen_url[0]
+        assert "league=Runes%20of%20Aldur" in _seen_url[0], _seen_url[0]
+        _seen_url.clear()
+        ninja_rates("Runes of Aldur")                   # 사람이 쓰는 형태도 같은 URL 이 되어야
+        assert "league=Runes%20of%20Aldur" in _seen_url[0], _seen_url[0]
+
         urllib.request.urlopen = lambda req, timeout=None: _FakeResp(_ninja_payload)
         _nr = ninja_rates("Runes of Aldur")
         assert _nr and _nr["exalted"] == {"rate": 1.0, "how": "기준"}, _nr
@@ -1971,6 +1986,10 @@ def demo():
         assert ninja_rates("L") is None
         urllib.request.urlopen = lambda req, timeout=None: _FakeResp({"unexpected": "shape"})
         assert ninja_rates("L") is None
+        # 리그명이 어긋나면 poe.ninja 는 200 에 **빈 lines** 를 준다 — 이것도 폴백이어야 한다
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(
+            {"core": {}, "lines": [], "items": {}})
+        assert ninja_rates("없는리그") is None
         def _boom(req, timeout=None): raise urllib.error.URLError("down")
         urllib.request.urlopen = _boom
         assert ninja_rates("L") is None                              # 네트워크 실패도 조용히 None
