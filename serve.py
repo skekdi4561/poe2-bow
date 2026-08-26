@@ -77,6 +77,14 @@ FRAME_RARITY = {0: "Normal", 1: "Magic", 2: "Rare", 3: "Unique",
 # 진화/확장 오브 같은 하급 화폐는 교환 매물이 거의 없어 환율을 못 믿고, 그걸 섞으면
 # 곡선의 세로 축척이 통째로 틀어진다.
 TRADE_CURRENCIES = ["exalted", "chaos", "divine", "annul"]
+# 매물 가격으로 받아주는 화폐. 교환쌍 측정(TRADE_CURRENCIES)과는 별개다 —
+# 미러는 교환 매물이 거의 없어 쌍으로 재기 어렵지만 poe.ninja 가 거래량 기반
+# 환율을 준다(실측 1 mirror = 1,969,271 엑잘). 미러를 빼면 시장 최상위 활이
+# 통째로 사라진다 — 실측: DPS 정렬 상위 100개 중 26개가 미러 가격이라 탈락했고
+# 그래서 "시장 최고"가 1533 이 아니라 1360 으로 보였다. 최전선은 단조 곡선이라
+# 비싼 최상위 매물이 아래쪽 곡선을 왜곡하지 않고 오른쪽으로 연장만 한다.
+# (거래소 화폐 id 는 EE2 items.ndjson 의 tradeTag 로 확인: Mirror of Kalandra -> "mirror")
+PRICE_CURRENCIES = TRADE_CURRENCIES + ["mirror"]
 FETCH_BATCH = 10          # GGG가 한 번에 받아주는 개수
 DEFAULT_LIMIT = 20        # 기본 20개 = fetch 2회. 더 필요하면 &limit=
 PAUSE = 0.7               # 배치 사이 간격 (레이트 리밋 예의)
@@ -279,7 +287,7 @@ def normalize(res):
     amount = price.get("amount")
     if not cur or not amount:
         return None                                    # 값이 아예 없으면 비교가 불가능
-    if cur not in TRADE_CURRENCIES:
+    if cur not in PRICE_CURRENCIES:
         return None                # 실거래 화폐 넷 밖은 버린다 — 환율을 못 믿으면 곡선이 틀어진다
     ext = item.get("extended") or {}
     pdps, edps = ext.get("pdps"), ext.get("edps")
@@ -469,7 +477,7 @@ def ninja_rates(league, currencies=None):
             continue
         cur = it.get("id")                      # 우리 화폐 키와 같은 문자열(실측)
         v = it.get("primaryValue")
-        if cur in TRADE_CURRENCIES and isinstance(v, (int, float)) and v > 0:
+        if cur in PRICE_CURRENCIES and isinstance(v, (int, float)) and v > 0:
             prim[cur] = float(v)
 
     ex = prim.get("exalted")
@@ -2038,6 +2046,7 @@ def demo():
         {"id": "chaos", "primaryValue": 0.09036, "maxVolumeRate": 11.07},
         {"id": "exalted", "primaryValue": 0.002697},
         {"id": "annul", "primaryValue": 0.3828},
+        {"id": "mirror", "primaryValue": 5319.0},
         {"id": "perfect-exalted-orb", "primaryValue": 5.0},       # 우리가 안 쓰는 화폐는 무시
     ]}
     class _FakeResp:
@@ -2067,7 +2076,9 @@ def demo():
         assert 33 < _nr["chaos"]["rate"] < 34, _nr["chaos"]
         assert 141 < _nr["annul"]["rate"] < 143, _nr["annul"]
         assert all(v["how"] == "poe.ninja" for k, v in _nr.items() if k != "exalted")
-        assert "perfect-exalted-orb" not in _nr and len(_nr) == 4, _nr
+        # 미러도 환율을 받아야 한다 — 없으면 미러 가격 활이 0(공짜)으로 환산돼 최전선을 망친다
+        assert "mirror" in _nr and _nr["mirror"]["rate"] > 1_000_000, _nr.get("mirror")
+        assert "perfect-exalted-orb" not in _nr and len(_nr) == 5, _nr
         # 형태가 어긋나거나(기준 화폐 없음) 값이 이상하면 None → 폴백
         urllib.request.urlopen = lambda req, timeout=None: _FakeResp(
             {"lines": [{"id": "divine", "primaryValue": 1.0}]})      # exalted 없음
@@ -2180,6 +2191,21 @@ def demo():
     finally:
         globals()["api_get"], globals()["throttle"], globals()["fetch_ids"] = _k_api4, _k_thr4, _k_fetch4
         _SEARCH_CACHE.clear()
+
+    # 매물 가격 화폐: 미러는 받고(시장 최상위 활이 여기 몰려 있다) 하급 화폐는 계속 배제.
+    assert "mirror" in PRICE_CURRENCIES, "미러를 빼면 시장 최상위 활이 통째로 사라진다"
+    assert all(c in PRICE_CURRENCIES for c in TRADE_CURRENCIES)
+    assert "transmute" not in PRICE_CURRENCIES and "aug" not in PRICE_CURRENCIES
+    # 교환쌍 측정은 4종 그대로 — 미러는 교환 매물이 얇아 쌍으로 못 재고 poe.ninja 로 받는다
+    assert "mirror" not in TRADE_CURRENCIES, "교환쌍이 20개로 불어난다"
+    _mir = normalize({"id": "x", "listing": {"price": {"currency": "mirror", "amount": 7}},
+                      "item": {"typeLine": "Bow", "frameType": 2,
+                               "extended": {"pdps": 900.0, "edps": 200.0}}})
+    assert _mir and _mir["cur"] == "mirror" and _mir["price"] == 7, _mir
+    _junk = normalize({"id": "y", "listing": {"price": {"currency": "transmute", "amount": 3}},
+                       "item": {"typeLine": "Bow", "frameType": 2,
+                                "extended": {"pdps": 900.0, "edps": 200.0}}})
+    assert _junk is None, "하급 화폐가 통과됨"
 
     # 상위권 밴드는 시장 total 로 그때그때 판정한다(고정 문턱은 리그 주기에 못 버틴다).
     # POE 는 시즌제라 리그가 초기화되면 상위권 DPS 구간이 날마다 달라진다 — 아래 시나리오는

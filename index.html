@@ -402,11 +402,15 @@ function dpsOf(b){
 }
 // 거래소는 화폐를 이름 그대로 준다(transmute/aug/exalted/divine...). 전부 엑잘 기준으로 환산한다.
 // 기본값은 추정치 — 실제 시세는 사용자가 채운다. 모르는 화폐는 0 으로 두고 제외한다.
-// 실거래 화폐는 넷뿐이다. 나머지 가격의 매물은 수집기가 아예 안 담는다 —
-// 하급 화폐는 교환 매물이 거의 없어 환율을 못 믿고, 섞으면 세로 축척이 틀어진다.
+// 수집기가 담는 화폐. 하급 화폐(transmute 등)는 교환 매물이 거의 없어 환율을 못 믿고,
+// 섞으면 세로 축척이 틀어져서 뺀다. 미러는 예외로 담는다 — 교환쌍은 얇지만 poe.ninja 가
+// 거래량 기반 환율을 주고, 빼면 시장 최상위 활이 통째로 사라진다(실측: DPS 상위 100개 중
+// 26개가 미러 가격).
+// ⚠️ RATE_DEFAULT 에 미러가 없으면 rateOf 가 0 을 돌려주고 exPrice 가 0 이 되어
+// 최상위 활이 '공짜'로 최전선을 점령한다 — 스냅샷 환율이 없을 때의 안전망이므로 지우지 말 것.
 // 아래는 스냅샷이 없을 때(직접 등록만 쓸 때)의 출발값일 뿐, 실제 값은 수집기가 채운다.
-const TRADE_CURRENCIES = ['exalted', 'chaos', 'divine', 'annul'];
-const RATE_DEFAULT = { exalted: 1, chaos: 65, divine: 300, annul: 279 };
+const TRADE_CURRENCIES = ['exalted', 'chaos', 'divine', 'annul', 'mirror'];
+const RATE_DEFAULT = { exalted: 1, chaos: 65, divine: 300, annul: 279, mirror: 2000000 };
 let rates = {};          // 사용자가 직접 고친 값 (항상 최우선)
 let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 값 { cur: {rate, n, lo, hi} }
 // 수집기가 "그 옵션을 검색 조건으로 걸어" 직접 재온 곡선들.
@@ -1462,6 +1466,15 @@ $('trade-go').addEventListener('click', async () => {
     if (okRate(4e-7) || okRate(0) || okRate(-3) || okRate(NaN) || okRate(Infinity)
         || okRate('300') || okRate(undefined)) throw new Error('okRate 통과하면 안 되는 값');
     if (!okRate(1) || !okRate(300)) throw new Error('okRate 정상값');
+
+    // 미러 가격 활(시장 최상위)이 '공짜'로 최전선을 점령하면 안 된다 —
+    // 환율을 모르는 화폐는 rateOf 가 0 을 돌려주므로 기본값이 반드시 있어야 한다.
+    if (!(RATE_DEFAULT.mirror > 1000)) throw new Error('미러 기본 환율 없음');
+    const kRm = rates, kSm = snapRates;
+    rates = {}; snapRates = {};
+    if (!(exPrice({ price: 7, cur: 'mirror' }) > 0)) throw new Error('미러가 0 으로 환산됨');
+    if (exPrice({ price: 1, cur: '없는화폐' }) !== 0) throw new Error('모르는 화폐는 0 이어야');
+    rates = kRm; snapRates = kSm;
 
     // 응답 모양이 어떻든 freshRows 는 배열을 돌려줘야 한다 (던지면 목록만 지우고 실패한다)
     if (freshRows({}).length || freshRows({ bows: '헐' }).length || freshRows(null).length
