@@ -56,9 +56,14 @@ ALLOWED_HOSTS = {
 # "dps >= T 중 최저가"가 곧 최전선 위의 점이므로, 문턱값을 훑으면 곡선이 바로 나온다.
 # 값이 폭증하는 상단일수록 촘촘하게 — 그 구간이 보간 오차가 가장 큰 곳이다.
 THRESHOLDS = [400, 500, 600, 680, 760, 840, 920, 1000, 1100]
-# 이 문턱 이상은 "DPS 상위권"으로 보고 상한 없이(=TOP_CAP 까지) 전부 뜬다.
-TOP_BAND = 1000          # 실측 시장 84개 — 상위 100위권을 통째로 덮는 지점
-TOP_CAP = 100            # 그래도 폭주 방지 상한(시장이 커지면 여기서 잘린다)
+# "DPS 상위 N개"를 시장에 맞춰 자동으로 겨눈다.
+# ⚠️ 고정 문턱(예전 TOP_BAND=1000)은 리그 주기에 못 버틴다 — POE 는 시즌제라 리그가
+# 초기화되면 상위권 DPS 구간이 날마다 확 달라진다. 1일차엔 DPS>=1000 매물이 0개라
+# 상위 밴드가 빈손이 되고, 리그 후반엔 수백 개가 되어 가격순 상한에 잘려 정작
+# 최상위가 안 보인다. 그래서 **검색 응답의 total(그 문턱의 시장 매물 수)** 을 읽어
+# "total 이 TOP_TARGET 이하로 떨어지는 가장 낮은 문턱"을 매 사이클 고른다.
+TOP_TARGET = 100         # 이 개수 안에 들어오는 가장 낮은 문턱을 상위권 밴드로 삼는다
+TOP_CAP = 100            # 그 밴드에서 실제로 뜰 최대 개수(폭주 방지)
 # 분업(사용자 결정): 저-DPS/저가는 사용자들의 가격검색이 크라우드로 채우고, 고-DPS
 # 끝단은 우리가 전담한다. 그래서 옛 저·중 밴드(450~660 촘촘)를 걷어내고 600~1100 을
 # 촘촘히 덮는다. 400/500 은 크라우드가 아직 작을 때의 최소 baseline.
@@ -829,13 +834,17 @@ def load_banded(page_url, per_band, category=None):
         # 그 층의 floor 를 긋기 충분하고, ">=600 에 247개"처럼 많은 밴드를 100씩 fetch 하면
         # fetch 레이트 리밋을 태운다(실측). 밴드를 촘촘히 두어(680/760/.../1100) DPS 해상도는
         # 밴드 수로, fetch 량은 밴드당 상한으로 각각 관리한다.
-        # 최상위 구간은 상한을 풀어 통째로 뜬다 = "시장 DPS 상위 100개".
-        # 실측(카카오 Runes of Aldur): DPS>=1000 이 시장에 84개, >=1100 은 54개뿐이라
-        # 이 밴드 하나를 다 뜨면 그게 곧 상위 100위권 전체다. 검색 요청은 안 늘고(이미 도는
-        # 밴드) fetch 만 는다. 예전엔 cap 30 + 가격오름차순이라 54개 중 14개만 보였고,
+        # 상위권 밴드는 상한을 풀어 통째로 뜬다 = "시장 DPS 상위 100개".
+        # 어느 문턱이 상위권인지는 **이번 응답의 total 로 그 자리에서 판정**한다(top_band 참고)
+        # — 리그 주기에 따라 그 지점이 계속 움직이므로 고정 상수로는 못 맞춘다.
+        # 예전엔 cap 30 + 가격오름차순이라 DPS>=1100 시장 54개 중 14개만 보였고,
         # 그래서 곡선 상단이 "우리가 본 것 중 최고"에서 끊겨 시장 진짜 최고를 몰랐다.
-        # 상한(TOP_CAP)은 남겨둔다 — 시장이 커져 이 구간이 수백 개가 되면 fetch 가 폭증한다.
-        cap = TOP_CAP if lo >= TOP_BAND else (30 if lo >= 600 else per_band)
+        band_total = r.get("total") or 0
+        # 상위권 판정: ①이 문턱의 시장 매물이 TOP_TARGET 이하로 좁혀졌거나
+        # ②최상단 밴드면(리그 후반엔 모든 밴드가 100을 넘어 ①이 아무 데도 안 걸린다 —
+        #   그때도 맨 위 구간만은 최대한 떠야 곡선 상단이 안 잘린다).
+        is_top = (band_total and band_total <= TOP_TARGET) or lo == THRESHOLDS[-1]
+        cap = TOP_CAP if is_top else (30 if lo >= 600 else per_band)
         ids = [i for i in (r.get("result") or [])[:cap] if i not in seen]
         seen.update(ids)
         total = max(total, r.get("total") or 0)
@@ -849,8 +858,9 @@ def load_banded(page_url, per_band, category=None):
         # 거래소가 가격 오름차순으로 줬으므로 첫 줄이 최저가다. 화폐가 섞여 있어
         # 금액만 비교하면 안 된다 (1 divine 이 10 exalted 보다 싸 보인다).
         head_row = rows[0] if rows else None
-        print("     DPS %s 이상: 매물 %s개 중 %d개 수집%s"
+        print("     DPS %s 이상: 매물 %s개 중 %d개 수집%s%s"
               % (lo, r.get("total"), len(rows),
+                 " [상위권]" if is_top else "",
                  "" if not head_row else " (최저 %g %s)" % (head_row["price"], head_row["cur"])))
         time.sleep(PAUSE)
     return out, total, skipped, base, league
@@ -2100,14 +2110,26 @@ def demo():
         globals()["api_get"] = _k_api2
         _STAT_CACHE.clear()
 
-    # 상위 DPS 밴드는 상한을 풀어 통째로 뜬다("DPS 상위 100개") — 아래 밴드는 그대로.
-    def _cap_for(lo, per_band=25):
-        return TOP_CAP if lo >= TOP_BAND else (30 if lo >= 600 else per_band)
-    assert _cap_for(1100) == TOP_CAP and _cap_for(1000) == TOP_CAP, "상위 밴드가 안 풀림"
-    assert _cap_for(920) == 30 and _cap_for(600) == 30, "중간 밴드 상한이 바뀜"
-    assert _cap_for(500) == 25 and _cap_for(400) == 25, "하단 밴드 상한이 바뀜"
-    assert TOP_BAND in THRESHOLDS, "TOP_BAND 가 실제 밴드 목록에 없다 — 영영 안 걸린다"
-    assert TOP_CAP >= 100, "상위 100개를 못 담는다"
+    # 상위권 밴드는 시장 total 로 그때그때 판정한다(고정 문턱은 리그 주기에 못 버틴다).
+    # POE 는 시즌제라 리그가 초기화되면 상위권 DPS 구간이 날마다 달라진다 — 아래 시나리오는
+    # 그 이동을 그대로 재현한 것이고, 판정이 시장을 따라가는지 확인한다.
+    def _cap_for(lo, band_total, per_band=25):
+        is_top = (band_total and band_total <= TOP_TARGET) or lo == THRESHOLDS[-1]
+        return TOP_CAP if is_top else (30 if lo >= 600 else per_band)
+    def _top_bands(tot):
+        return [lo for lo in THRESHOLDS if _cap_for(lo, tot.get(lo, 0)) == TOP_CAP]
+    # 리그 1일차: 아직 고DPS 활이 없어 상위권이 훨씬 낮은 문턱으로 내려온다
+    _day1 = {400: 800, 500: 300, 600: 40, 680: 8, 760: 1, 840: 0, 920: 0, 1000: 0, 1100: 0}
+    assert 600 in _top_bands(_day1), "리그 초기에 상위권 문턱이 안 내려옴: %r" % _top_bands(_day1)
+    # 리그 2주차(현재 실측): DPS>=1000 이 84개 -> 여기가 상위 100위권
+    _now = {400: 10000, 500: 10000, 600: 2636, 680: 979, 760: 422, 840: 186, 920: 128, 1000: 84, 1100: 54}
+    assert 1000 in _top_bands(_now) and 920 not in _top_bands(_now), _top_bands(_now)
+    # 리그 후반: 모든 밴드가 100 을 넘어도 최상단만은 상위권으로 떠야 곡선 상단이 안 잘린다
+    _late = {400: 99999, 500: 60000, 600: 20000, 680: 9000, 760: 4000, 840: 1800, 920: 900, 1000: 400, 1100: 150}
+    assert _top_bands(_late) == [THRESHOLDS[-1]], _top_bands(_late)
+    # 중간/하단 밴드 상한은 그대로
+    assert _cap_for(600, 2636) == 30 and _cap_for(400, 10000) == 25
+    assert TOP_CAP >= TOP_TARGET, "상위 목표 개수를 못 담는다"
 
     # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
     assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
