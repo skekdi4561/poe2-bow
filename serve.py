@@ -553,6 +553,10 @@ def fetch_rates(base, league, currencies):
 # 그래서 옵션 자체를 검색 조건으로 넣어 그 조건만의 최저가 곡선을 따로 뜬다.
 # (실측: DPS 500+ 최저가 50엑잘 -> "투사체 스킬 레벨 +2" 조건을 걸면 8디바인, 48배)
 
+# ⚠️ 아래 조건 곡선 기계장치(COND_*/PRIORITY_STATS/pick_conditions/sweep_condition/
+#    stat_catalog/cond_stat_filter)는 **현재 수집기가 부르지 않는다.** 2026-08-27 에
+#    "TOP100 만 수집"으로 바꾸면서 걷어냈다 — 옵션별 프리미엄은 그 100개의 mods 로
+#    화면에서 로컬 계산한다(추가 요청 0). 되살리려면 collect() 에서 다시 부르면 된다.
 COND_MODS = 10                      # 조건 곡선 최대 개수 — 요청 수가 이것에 비례한다
 COND_DPS = [500, 550, 600, 650]     # 조건 곡선은 문턱값을 성기게 잡는다
 
@@ -840,75 +844,44 @@ def with_category(query, cat_id):
     return q
 
 
-def load_banded(page_url, per_band, category=None):
-    """DPS 문턱값을 훑는다. "dps >= T 중 최저가"가 곧 최전선 위의 점이다.
-    한 번의 검색은 id 를 100개까지만 주므로 구간을 안 나누면 표본이 시장 바닥에만 몰린다.
-    category 를 주면 저장된 검색을 그 무기로 재조준한다(기본값 None = 저장된 검색 그대로)."""
+def load_top_dps(page_url, category=None):
+    """시장 DPS 상위 TOP_CAP 개만 뜬다 — 이 수집기가 하는 검색은 이것 하나뿐이다.
+
+    예전에는 DPS 밴드 9개(400~1100)를 훑고 옵션별 조건 곡선까지 따로 검색했다. 그 구조는
+    "가격 오름차순 100개에는 비싼 옵션이 붙은 활이 아예 안 들어온다"는 제약을 우회하려던
+    것이었는데, **DPS 정렬 상위 100개가 곧 그 비싼 활들 자체**라 우회가 필요 없어졌다.
+    옵션별 프리미엄은 이 100개의 mods 로 화면에서 로컬 계산한다(추가 요청 0).
+    낮은 DPS 구간은 값이 사실상 공짜라 수집하지 않는다 — 필요하면 사용자가 화면의
+    "불러오기"로 자기 검색을 직접 합칠 수 있다.
+
+    category 를 주면 저장된 검색을 그 무기로 재조준한다(기본값 None = 저장된 검색 그대로).
+    """
     base, league_path, league, query = resolve_search(page_url)
     if category:
         query = with_category(query, category)
 
-    out, seen, total, skipped = [], set(), 0, 0
-
-    # ① DPS 상위권을 정렬로 정확히 먼저 뜬다(거래소 웹 UI 의 DPS 정렬과 같은 것).
-    #    밴딩만으로는 밴드 경계 때문에 84~128개처럼 어긋나고, 리그가 초기화되면 그
-    #    지점이 날마다 움직인다 — 정렬은 언제나 "지금 시장 상위 N개"를 정확히 준다.
-    #    정렬을 거부하는 서버/리그가 있을 수 있으므로 실패하면 조용히 밴딩만 쓴다.
+    throttle("search")
     try:
-        throttle("search")
-        rt = search_top_dps(base, league_path, query)
-        top_ids = [i for i in (rt.get("result") or [])[:TOP_CAP]]
-        if top_ids:
-            seen.update(top_ids)
-            top_rows = fetch_ids(base, rt["id"], top_ids)
-            out += top_rows
-            skipped += len(top_ids) - len(top_rows)
-            total = max(total, rt.get("total") or 0)
-            best = max((r["pdps"] + r["edps"] for r in top_rows), default=0)
-            print("     DPS 상위권(정렬): %d개 수집 — 시장 최고 %.0f DPS"
-                  % (len(top_rows), best))
+        r = search_top_dps(base, league_path, query)
+        how = "정렬"
     except TradeError as e:
-        print("     DPS 정렬 건너뜀(밴딩으로 대체): %s" % e)
-    except Exception as e:
-        print("     DPS 정렬 건너뜀(밴딩으로 대체): %s: %s" % (type(e).__name__, e))
-
-    for lo in THRESHOLDS:
+        # 정렬을 거부하는 서버/리그가 있을 수 있다. 그때도 "상위만" 원칙은 지켜야 하므로
+        # 최상단 문턱 밴드로 대체한다 — 아래 구간으로 내려가지는 않는다.
+        print("     DPS 정렬 실패 — 최상단 밴드로 대체: %s" % e)
         throttle("search")
-        r = search_min_dps(base, league_path, query, lo)
-        # 고-DPS 밴드(>=600)는 상한 30. 최전선은 각 DPS 층의 "최저가"만 필요하므로 30개면
-        # 그 층의 floor 를 긋기 충분하고, ">=600 에 247개"처럼 많은 밴드를 100씩 fetch 하면
-        # fetch 레이트 리밋을 태운다(실측). 밴드를 촘촘히 두어(680/760/.../1100) DPS 해상도는
-        # 밴드 수로, fetch 량은 밴드당 상한으로 각각 관리한다.
-        # 상위권 밴드는 상한을 풀어 통째로 뜬다 = "시장 DPS 상위 100개".
-        # 어느 문턱이 상위권인지는 **이번 응답의 total 로 그 자리에서 판정**한다(top_band 참고)
-        # — 리그 주기에 따라 그 지점이 계속 움직이므로 고정 상수로는 못 맞춘다.
-        # 예전엔 cap 30 + 가격오름차순이라 DPS>=1100 시장 54개 중 14개만 보였고,
-        # 그래서 곡선 상단이 "우리가 본 것 중 최고"에서 끊겨 시장 진짜 최고를 몰랐다.
-        band_total = r.get("total") or 0
-        # 상위권 판정: ①이 문턱의 시장 매물이 TOP_TARGET 이하로 좁혀졌거나
-        # ②최상단 밴드면(리그 후반엔 모든 밴드가 100을 넘어 ①이 아무 데도 안 걸린다 —
-        #   그때도 맨 위 구간만은 최대한 떠야 곡선 상단이 안 잘린다).
-        is_top = (band_total and band_total <= TOP_TARGET) or lo == THRESHOLDS[-1]
-        cap = TOP_CAP if is_top else (30 if lo >= 600 else per_band)
-        ids = [i for i in (r.get("result") or [])[:cap] if i not in seen]
-        seen.update(ids)
-        total = max(total, r.get("total") or 0)
-        rows = fetch_ids(base, r["id"], ids) if ids else []
-        out += rows
-        # normalize() 가 되돌린 것 = 실거래 화폐 넷 밖이거나 GGG 가 DPS 를 안 준 매물.
-        # 여기서 안 세면 "제외 0" 이 그냥 고정 문구가 된다 — 실제로 그랬다(수집 로그 전부 0).
-        # 버려지는 게 대부분 싼 매물이라(화폐 필터 이전 스냅샷 #3 은 120개 중 51개가
-        # transmute/aug 였다) 조용히 빠지면 곡선 아래쪽이 통째로 들린다.
-        skipped += len(ids) - len(rows)
-        # 거래소가 가격 오름차순으로 줬으므로 첫 줄이 최저가다. 화폐가 섞여 있어
-        # 금액만 비교하면 안 된다 (1 divine 이 10 exalted 보다 싸 보인다).
-        head_row = rows[0] if rows else None
-        print("     DPS %s 이상: 매물 %s개 중 %d개 수집%s%s"
-              % (lo, r.get("total"), len(rows),
-                 " [상위권]" if is_top else "",
-                 "" if not head_row else " (최저 %g %s)" % (head_row["price"], head_row["cur"])))
-        time.sleep(PAUSE)
-    return out, total, skipped, base, league
+        r = search_min_dps(base, league_path, query, THRESHOLDS[-1])
+        how = "밴드 %d+" % THRESHOLDS[-1]
+
+    ids = (r.get("result") or [])[:TOP_CAP]
+    total = r.get("total") or 0
+    rows = fetch_ids(base, r["id"], ids) if ids else []
+    # normalize() 가 되돌린 것 = 가격 화폐가 PRICE_CURRENCIES 밖이거나 GGG 가 DPS 를 안 준 매물.
+    skipped = len(ids) - len(rows)
+    best = max((x["pdps"] + x["edps"] for x in rows), default=0)
+    print("     DPS 상위권(%s): 시장 %s개 중 %d개 수집 — 최고 %.0f DPS%s"
+          % (how, total, len(rows), best,
+             "" if not skipped else " (제외 %d)" % skipped))
+    return rows, total, skipped, base, league
 
 
 # 화면에서 누르는 경로는 사람이 연타할 수 있다. 오래 자면 브라우저가 멈춘 것처럼 보이니,
@@ -1428,20 +1401,12 @@ def collect(url, limit=100):
     rates = best_rates(base, league, TRADE_CURRENCIES)
     rates = guard_rates(rates, rate_memory())
 
-    bows, total, skipped, base, league = load_banded(url, limit)
+    bows, total, skipped, base, league = load_top_dps(url)
 
-    # 옵션 조건 곡선 — 검색 100개 상한 때문에 이것만이 옵션 프리미엄을 재는 방법이다
+    # 옵션 조건 곡선(따로 검색해 뜨던 것)은 걷어냈다. 그게 있던 이유는 "가격 오름차순
+    # 100개에는 비싼 옵션이 붙은 활이 안 들어온다"였는데, 지금 표본이 **DPS 상위 100개**라
+    # 그 활들 자체다 — 옵션별 프리미엄은 이 100개의 mods 로 화면에서 로컬 계산한다.
     conds = []
-    try:
-        b2, league_path, _, query = resolve_search(url)
-        cat = stat_catalog(b2)
-        conds = pick_conditions(bows, cat)
-        for c in conds:
-            print("     조건 [%s >= %g] (%s, 표본 관측 %d건)"
-                  % (c["label"], c["min"], c.get("why", ""), c["n"]))
-            bows += sweep_condition(b2, league_path, query, c)
-    except TradeError as e:
-        print("     조건 곡선 건너뜀: %s" % e)
     with db() as con:
         sid = con.execute(
             "INSERT INTO snapshots(taken_at, source_url, total, kept, rates) VALUES (?,?,?,?,?)",
@@ -1499,17 +1464,8 @@ def collect_weapon(url, limit, cat_id, suffix):
     taken = int(time.time() * 1000)
     base, league_path0, league, q0 = resolve_search(url)
     rates = guard_rates(best_rates(base, league, TRADE_CURRENCIES), rate_memory())
-    rows, total, skipped, base, league = load_banded(url, limit, category=cat_id)
-    conds = []
-    try:
-        b2, league_path, _, query = resolve_search(url)
-        query = with_category(query, cat_id)
-        cat = stat_catalog(b2)
-        conds = pick_conditions(rows, cat)
-        for c in conds:
-            rows += sweep_condition(b2, league_path, query, c)
-    except TradeError as e:
-        print("     조건 곡선 건너뜀: %s" % e)
+    rows, total, skipped, base, league = load_top_dps(url, category=cat_id)
+    conds = []                                   # 조건 곡선 제거 — collect() 주석 참고
     rows = dedup_by_cond_id(rows)                 # 활 merge_harvest 의 (cond,id) 접기와 정합
     out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
@@ -1843,26 +1799,44 @@ def demo():
             raise AssertionError("차단됐어야 함: " + bad)
         except TradeError:
             pass
-    # load_banded 는 normalize() 가 버린 매물 수를 실제로 세야 한다.
-    # 예전엔 0 을 그대로 돌려줘서 "제외 N" 이 언제나 0 인 고정 문구였다.
+    # load_top_dps: 검색은 **정렬 1회뿐**이어야 하고(밴드 순회 없음),
+    # normalize() 가 버린 매물 수를 실제로 세야 한다(예전엔 "제외 0" 고정 문구였다).
     global PAUSE
     keep_pause = PAUSE
-    saved = {k: globals()[k] for k in ("resolve_search", "search_min_dps", "fetch_ids", "throttle")}
+    saved = {k: globals()[k] for k in
+             ("resolve_search", "search_min_dps", "search_top_dps", "fetch_ids", "throttle")}
     try:
         PAUSE = 0
-        globals()["throttle"] = lambda b: None
+        _searches = []
+        globals()["throttle"] = lambda b, mw=None: None
         globals()["resolve_search"] = lambda u: ("https://h", "/api/trade2/search/poe2/L", "L", {})
-        globals()["search_min_dps"] = lambda b, lp, q, lo: {
-            "id": "q", "total": 7, "result": ["a", "b", "c"]}   # 세 밴드 모두 같은 id -> 첫 밴드만 샌다
+        globals()["search_top_dps"] = lambda b, lp, q, lo=None: (
+            _searches.append("top") or {"id": "q", "total": 7, "result": ["a", "b", "c"]})
+        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
+            _searches.append("band") or {"id": "q", "total": 7, "result": ["a", "b", "c"]})
         # 셋을 달라 했는데 하나만 살아 돌아옴 (화폐가 규격 밖이거나 DPS 가 없어서)
-        globals()["fetch_ids"] = lambda b, qid, ids: [{"price": 1, "cur": "divine"}] if ids else []
-        rows, total, skipped, _, _ = load_banded("https://h/trade2/search/poe2/L/x", 3)
+        globals()["fetch_ids"] = lambda b, qid, ids: (
+            [{"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0}] if ids else [])
+        rows, total, skipped, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
         assert len(rows) == 1, rows
         assert skipped == 2, "버려진 매물을 안 셌다: %r" % skipped
         assert total == 7, total
+        assert _searches == ["top"], "정렬 1회 말고 다른 검색이 나갔다: %r" % _searches
 
-        globals()["fetch_ids"] = lambda b, qid, ids: [{"price": 1, "cur": "divine"} for i in ids]  # 전부 살아 오면 0
-        assert load_banded("https://h/trade2/search/poe2/L/x", 3)[2] == 0
+        globals()["fetch_ids"] = lambda b, qid, ids: [
+            {"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0} for i in ids]
+        assert load_top_dps("https://h/trade2/search/poe2/L/x")[2] == 0   # 전부 살아 오면 0
+
+        # 정렬을 거부당하면 최상단 밴드로만 대체한다 — 아래 구간으로 내려가지 않는다
+        _searches.clear()
+        _bands = []
+        def _no_sort(b, lp, q, lo=None):
+            raise TradeError("거래소 응답 400: unknown sort")
+        globals()["search_top_dps"] = _no_sort
+        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
+            _bands.append(lo) or {"id": "q", "total": 7, "result": ["a"]})
+        load_top_dps("https://h/trade2/search/poe2/L/x")
+        assert _bands == [THRESHOLDS[-1]], "정렬 실패 시 저DPS 로 내려갔다: %r" % _bands
     finally:
         PAUSE = keep_pause
         globals().update(saved)
@@ -1874,20 +1848,16 @@ def demo():
     d = tempfile.mkdtemp()
     DB, LATEST = os.path.join(d, "t.db"), os.path.join(d, "t.json")
     try:
-        real = globals()["load_banded"]
-        real_rates = globals()["fetch_rates"]
+        real = globals()["load_top_dps"]
+        real_rates = globals()["best_rates"]
         real_resolve = globals()["resolve_search"]
-        real_cat, real_sweep = globals()["stat_catalog"], globals()["sweep_condition"]
         # 자체 검증은 절대 네트워크를 타면 안 된다 — collect() 가 부르는 것은 전부 대역한다
-        globals()["stat_catalog"] = lambda b: {"치명타 확률 #%": "explicit.stat_518292764"}
-        globals()["sweep_condition"] = lambda b, lp, q, c: [
-            {"name": "조건활", "pdps": 300.0, "edps": 0.0, "aps": 1.4, "crit": 8.0,
-             "price": 5, "cur": "divine", "rarity": "Rare", "mods": [], "cond": c["label"]}]
+        # (best_rates 는 안에서 poe.ninja 를 부르므로 반드시 통째로 대역할 것)
         globals()["resolve_search"] = lambda u: (
             "https://poe.kakaogames.com", "/api/trade2/search/poe2/L", "L", {})
-        globals()["fetch_rates"] = lambda b, l, c: {"exalted": {"rate": 1.0, "n": None},
-                                                    "divine": {"rate": 300.0, "n": 3}}
-        globals()["load_banded"] = lambda u, n: (
+        globals()["best_rates"] = lambda b, l, c: {"exalted": {"rate": 1.0, "n": None},
+                                                   "divine": {"rate": 300.0, "n": 3}}
+        globals()["load_top_dps"] = lambda u, category=None: (
             [{"name": "활A", "pdps": 100.0, "edps": 5.0, "aps": 1.4, "crit": 6.0,
               "price": 9, "cur": "div", "rarity": "Rare",
               "mods": ["38% increased Critical Hit Chance"]}], 137, 2,
@@ -1906,26 +1876,22 @@ def demo():
         assert latest["bows"][0]["name"] == "활A" and latest["total"] == 137
         assert latest["rates"]["divine"]["rate"] == 300.0      # 환율도 같이 실린다
         assert list(latest["rates"]) == ["exalted", "divine"]  # 환율이 아이템보다 먼저 잡힌다
-        # 조건 곡선이 스냅샷에 실리고, 그 활에 조건 표시가 붙는다
-        n_cond = sum(len(x[2]) for x in PRIORITY_STATS)
-        assert len(latest["conds"]) == n_cond, latest["conds"]
-        assert n_all == 1 + n_cond                        # 기본 1개 + 조건마다 1점
-        conded = [b for b in latest["bows"] if b.get("cond")]
-        assert len(conded) == n_cond and conded[0]["cond"] == latest["conds"][0]["label"]
-        # 같은 옵션이라도 문턱값이 다르면 별개 곡선이다
-        assert latest["conds"][0]["min"] != latest["conds"][1]["min"]
+        # TOP100 만 수집한다 — 조건 곡선을 위한 추가 검색은 더 이상 없다.
+        # (옵션별 프리미엄은 이 매물들의 mods 로 화면에서 로컬 계산한다)
+        assert latest["conds"] == [], latest["conds"]
+        assert n_all == 1, "조건 스윕 매물이 아직 섞여 들어온다: %r" % n_all
         with db() as con:
-            assert con.execute("SELECT COUNT(*) FROM bows WHERE cond IS NOT NULL").fetchone()[0] > 0
+            assert con.execute(
+                "SELECT COUNT(*) FROM bows WHERE cond IS NOT NULL").fetchone()[0] == 0
         with db() as con:
             assert json.loads(con.execute("SELECT rates FROM snapshots").fetchone()[0])["exalted"]["rate"] == 1.0
         assert collect(u) == n_all                  # 두 번째 스냅샷도 쌓인다
         with db() as con:
             assert con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 2
     finally:
-        globals()["load_banded"] = real
-        globals()["fetch_rates"] = real_rates
+        globals()["load_top_dps"] = real
+        globals()["best_rates"] = real_rates
         globals()["resolve_search"] = real_resolve
-        globals()["stat_catalog"], globals()["sweep_condition"] = real_cat, real_sweep
         DB, LATEST = keep
 
     # 스로틀: 헤더는 '응답 시점'의 사용량이라, 그 뒤 흐른 시간을 안 빼면
@@ -2172,26 +2138,6 @@ def demo():
         assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
     finally:
         globals()["api_get"] = _k_api3
-    # 거래소가 dps 정렬을 거부해도 수집은 계속돼야 한다(밴딩 폴백)
-    _k_api4, _k_thr4, _k_fetch4 = api_get, throttle, fetch_ids
-    try:
-        _n = {"i": 0}
-        def _reject_sort(u, payload=None, _retried=False):
-            if (payload or {}).get("sort") == {"dps": "desc"}:
-                raise TradeError("거래소 응답 400: unknown sort")
-            _n["i"] += 1
-            return {"id": "q", "total": 7, "result": []}
-        globals()["api_get"] = _reject_sort
-        globals()["throttle"] = lambda b, mw=None: None
-        globals()["fetch_ids"] = lambda *a: []
-        _SEARCH_CACHE.clear()
-        _SEARCH_CACHE["u"] = (("https://h", "/p", "L", {"filters": {}}), time.time())
-        _o, _t, _sk, _b, _lg = load_banded("u", 25)
-        assert _n["i"] == len(THRESHOLDS), "정렬 거부 후 밴딩이 안 돌았다: %d" % _n["i"]
-    finally:
-        globals()["api_get"], globals()["throttle"], globals()["fetch_ids"] = _k_api4, _k_thr4, _k_fetch4
-        _SEARCH_CACHE.clear()
-
     # 매물 가격 화폐: 미러는 받고(시장 최상위 활이 여기 몰려 있다) 하급 화폐는 계속 배제.
     assert "mirror" in PRICE_CURRENCIES, "미러를 빼면 시장 최상위 활이 통째로 사라진다"
     assert all(c in PRICE_CURRENCIES for c in TRADE_CURRENCIES)
@@ -2207,26 +2153,8 @@ def demo():
                                 "extended": {"pdps": 900.0, "edps": 200.0}}})
     assert _junk is None, "하급 화폐가 통과됨"
 
-    # 상위권 밴드는 시장 total 로 그때그때 판정한다(고정 문턱은 리그 주기에 못 버틴다).
-    # POE 는 시즌제라 리그가 초기화되면 상위권 DPS 구간이 날마다 달라진다 — 아래 시나리오는
-    # 그 이동을 그대로 재현한 것이고, 판정이 시장을 따라가는지 확인한다.
-    def _cap_for(lo, band_total, per_band=25):
-        is_top = (band_total and band_total <= TOP_TARGET) or lo == THRESHOLDS[-1]
-        return TOP_CAP if is_top else (30 if lo >= 600 else per_band)
-    def _top_bands(tot):
-        return [lo for lo in THRESHOLDS if _cap_for(lo, tot.get(lo, 0)) == TOP_CAP]
-    # 리그 1일차: 아직 고DPS 활이 없어 상위권이 훨씬 낮은 문턱으로 내려온다
-    _day1 = {400: 800, 500: 300, 600: 40, 680: 8, 760: 1, 840: 0, 920: 0, 1000: 0, 1100: 0}
-    assert 600 in _top_bands(_day1), "리그 초기에 상위권 문턱이 안 내려옴: %r" % _top_bands(_day1)
-    # 리그 2주차(현재 실측): DPS>=1000 이 84개 -> 여기가 상위 100위권
-    _now = {400: 10000, 500: 10000, 600: 2636, 680: 979, 760: 422, 840: 186, 920: 128, 1000: 84, 1100: 54}
-    assert 1000 in _top_bands(_now) and 920 not in _top_bands(_now), _top_bands(_now)
-    # 리그 후반: 모든 밴드가 100 을 넘어도 최상단만은 상위권으로 떠야 곡선 상단이 안 잘린다
-    _late = {400: 99999, 500: 60000, 600: 20000, 680: 9000, 760: 4000, 840: 1800, 920: 900, 1000: 400, 1100: 150}
-    assert _top_bands(_late) == [THRESHOLDS[-1]], _top_bands(_late)
-    # 중간/하단 밴드 상한은 그대로
-    assert _cap_for(600, 2636) == 30 and _cap_for(400, 10000) == 25
-    assert TOP_CAP >= TOP_TARGET, "상위 목표 개수를 못 담는다"
+    # 상위권은 이제 밴드 판정이 아니라 DPS 정렬로 직접 뜬다(load_top_dps).
+    assert TOP_CAP >= 100, "상위 100개를 못 담는다"
 
     # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
     assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
