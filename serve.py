@@ -437,6 +437,13 @@ NINJA_UA = "poe2-bow-appraiser/1.0 (personal price tool; contact: skekdi4561@gma
 # (실측: "exalted"/"chaos"/"divine"/"annul") — 별도 이름 매핑표가 필요 없다.
 
 
+# 환율은 무기와 무관하다 — 13종을 한 사이클에 돌 때 무기마다 부르면 같은 값을 13번 받는다.
+# poe.ninja ToS 도 "몇 분보다 빠른 폴링은 무의미"라 하고(POE2 는 시간당 갱신), 자기 HTTP
+# 캐시가 5분이다. 사이클 하나를 덮고도 남는 30분으로 잡는다.
+_NINJA_CACHE = {}
+NINJA_CACHE_TTL = 1800
+
+
 def ninja_rates(league, currencies=None):
     """poe.ninja 에서 엑잘 기준 환율을 뜬다. fetch_rates 와 **같은 형태**로 돌려주므로
     하류(guard_rates/write_latest/사이트/위젯)는 출처를 몰라도 된다. 실패하면 None.
@@ -444,6 +451,9 @@ def ninja_rates(league, currencies=None):
     poe.ninja 는 divine 기준(primaryValue = 1개당 divine)이라 엑잘로 환산한다:
         1 X = (X.primaryValue / exalted.primaryValue) 엑잘
     """
+    hit = _NINJA_CACHE.get(league)
+    if hit and time.time() - hit[1] < NINJA_CACHE_TTL:
+        return hit[0]
     try:
         # 호출부가 넘기는 league 는 거래소 URL 경로에서 잘라온 것이라 **이미 퍼센트 인코딩**돼
         # 있다("Runes%20of%20Aldur"). 그대로 다시 quote 하면 %2520 이 되어 poe.ninja 가 빈
@@ -495,6 +505,7 @@ def ninja_rates(league, currencies=None):
         out[cur] = {"rate": round(rate, 6), "how": "poe.ninja"}
     if len(out) < 2:
         return None
+    _NINJA_CACHE[league] = (out, time.time())
     print("     --- 환율 (엑잘 기준, poe.ninja) ---")
     for cur, d in sorted(out.items(), key=lambda kv: -kv[1]["rate"]):
         print("     1 %-8s = %10.4f ex  (%s)" % (cur, d["rate"], d.get("how")))
@@ -1597,26 +1608,43 @@ def release_collector_lock():
 
 
 def collect_loop(url, every, limit, weapons=False):
-    """weapons=True 면 사이클마다 공격무기를 하나씩 순환 수집한다(캐스터 제외).
-    요청량을 1x 로 유지하려는 것 — 여러 무기를 동시에 뜨면 레이트 리밋 위험(싱글톤 잠금과 같은 이유).
-    각 무기는 len(ATTACK_WEAPONS) 사이클마다 갱신된다. 활(접미사 빈 문자열)은 기존 전체 파이프라인."""
-    idx = 0
+    """weapons=True 면 **한 사이클에 공격무기 13종을 전부** 수집한다(캐스터 제외).
+
+    예전엔 사이클마다 한 종씩 순환했다 — 밴드 9개+조건 40회를 돌던 시절엔 무기당 17분이라
+    13종을 한 번에 돌 수 없었기 때문이다. TOP100 만 뜨게 바뀌면서 무기당 약 1분이 됐고,
+    순환을 유지하면 무기 하나가 13시간에 한 번만 갱신되는 게 오히려 손해다.
+    실측 예산: 무기당 검색 1 + fetch 10 -> 13종이면 검색 13, fetch 130.
+    병목은 fetch 의 "300초당 50회"라 사이클이 약 13~15분 걸리고(throttle 이 자동 페이싱),
+    6시간 1000회 한도의 13% 수준이라 시간당 1회 도는 데 여유가 있다.
+    한 무기가 실패해도 나머지는 계속 돈다 — 무기별로 예외를 가둔다.
+    활(접미사 빈 문자열)은 24h 합집합·크라우드·추세를 포함한 기존 전체 파이프라인.
+    """
     while True:
-        try:
-            if weapons:
-                cat_id, suffix, name = ATTACK_WEAPONS[idx % len(ATTACK_WEAPONS)]
-                idx += 1
-                print("[%s] 순환 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
-                if suffix:
-                    collect_weapon(url, limit, cat_id, suffix)
-                else:
-                    collect(url, limit)      # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
-            else:
+        if weapons:
+            t0 = time.time()
+            done = 0
+            for cat_id, suffix, name in ATTACK_WEAPONS:
+                print("[%s] 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
+                try:
+                    if suffix:
+                        collect_weapon(url, limit, cat_id, suffix)
+                    else:
+                        collect(url, limit)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
+                    done += 1
+                except TradeError as e:
+                    print("     %s 건너뜀: %s" % (name, e))
+                except Exception as e:        # 한 무기가 죽어도 나머지는 계속
+                    print("     %s 오류: %s: %s" % (name, type(e).__name__, e))
+            print("[%s] 이번 사이클 %d/%d 종 수집 (%.0f분)"
+                  % (time.strftime("%H:%M:%S"), done, len(ATTACK_WEAPONS),
+                     (time.time() - t0) / 60))
+        else:
+            try:
                 collect(url, limit)
-        except TradeError as e:
-            print("[%s] 수집 실패: %s" % (time.strftime("%H:%M:%S"), e))
-        except Exception as e:                  # 한 번 실패했다고 루프까지 죽으면 안 된다
-            print("[%s] 수집 오류: %s: %s" % (time.strftime("%H:%M:%S"), type(e).__name__, e))
+            except TradeError as e:
+                print("[%s] 수집 실패: %s" % (time.strftime("%H:%M:%S"), e))
+            except Exception as e:            # 한 번 실패했다고 루프까지 죽으면 안 된다
+                print("[%s] 수집 오류: %s: %s" % (time.strftime("%H:%M:%S"), type(e).__name__, e))
         print("     다음 수집까지 %d초 대기 (Ctrl+C 로 종료)" % every)
         time.sleep(every)
 
@@ -2021,6 +2049,7 @@ def demo():
         def __enter__(self): return self
         def __exit__(self, *a): return False
     _keep_open = urllib.request.urlopen
+    _NINJA_CACHE.clear()
     try:
         # ⚠️ 호출부(collect)는 거래소 URL 경로에서 자른 **이미 인코딩된** 리그명을 넘긴다.
         # 그걸 또 quote 하면 %2520 이 되어 poe.ninja 가 빈 lines 를 준다(실사고).
@@ -2058,8 +2087,20 @@ def demo():
         def _boom(req, timeout=None): raise urllib.error.URLError("down")
         urllib.request.urlopen = _boom
         assert ninja_rates("L") is None                              # 네트워크 실패도 조용히 None
+        # 환율은 무기 무관 — 13종을 한 사이클에 돌 때 같은 값을 13번 받으면 안 된다
+        _NINJA_CACHE.clear()
+        _hits = []
+        urllib.request.urlopen = lambda req, timeout=None: (
+            _hits.append(1), _FakeResp(_ninja_payload))[1]
+        for _ in range(13):
+            assert ninja_rates("같은리그")
+        assert len(_hits) == 1, "무기마다 poe.ninja 를 다시 불렀다: %d회" % len(_hits)
+        _NINJA_CACHE["같은리그"] = (_NINJA_CACHE["같은리그"][0], time.time() - NINJA_CACHE_TTL - 1)
+        ninja_rates("같은리그")
+        assert len(_hits) == 2, "TTL 만료 후 재요청 안 함"
     finally:
         urllib.request.urlopen = _keep_open
+        _NINJA_CACHE.clear()
     # best_rates: poe.ninja 가 되면 그걸 쓰고, None 이면 거래소 교환으로 폴백한다
     _keep_n, _keep_f = ninja_rates, fetch_rates
     try:
@@ -2152,6 +2193,32 @@ def demo():
                        "item": {"typeLine": "Bow", "frameType": 2,
                                 "extended": {"pdps": 900.0, "edps": 200.0}}})
     assert _junk is None, "하급 화폐가 통과됨"
+
+    # collect_loop(weapons=True): 한 사이클에 13종을 전부 돌고,
+    # 한 무기가 실패해도 나머지가 계속 돈다(예전엔 사이클마다 한 종씩 순환).
+    _seen_w, _k_cw, _k_c, _k_sleep = [], collect_weapon, collect, time.sleep
+    class _StopCycle(Exception):
+        pass
+    try:
+        def _cw(u, n, cat, sfx):
+            _seen_w.append(sfx)
+            if sfx == "spear":
+                raise TradeError("한 무기만 실패")   # 나머지를 멈추면 안 된다
+        globals()["collect_weapon"] = _cw
+        globals()["collect"] = lambda u, n=None: _seen_w.append("")
+        def _sleep(x):
+            raise _StopCycle()                      # 첫 사이클만 돌고 빠져나온다
+        time.sleep = _sleep
+        try:
+            collect_loop("u", 3600, 25, weapons=True)
+        except _StopCycle:
+            pass
+        assert _seen_w == [w[1] for w in ATTACK_WEAPONS], _seen_w
+        assert len(_seen_w) == 13 and _seen_w[0] == "", "활이 먼저, 13종 전부"
+        assert "warstaff" in _seen_w, "실패한 무기 뒤가 안 돌았다"
+    finally:
+        globals()["collect_weapon"], globals()["collect"] = _k_cw, _k_c
+        time.sleep = _k_sleep
 
     # 상위권은 이제 밴드 판정이 아니라 DPS 정렬로 직접 뜬다(load_top_dps).
     assert TOP_CAP >= 100, "상위 100개를 못 담는다"
