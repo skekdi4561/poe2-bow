@@ -56,6 +56,9 @@ ALLOWED_HOSTS = {
 # "dps >= T 중 최저가"가 곧 최전선 위의 점이므로, 문턱값을 훑으면 곡선이 바로 나온다.
 # 값이 폭증하는 상단일수록 촘촘하게 — 그 구간이 보간 오차가 가장 큰 곳이다.
 THRESHOLDS = [400, 500, 600, 680, 760, 840, 920, 1000, 1100]
+# 이 문턱 이상은 "DPS 상위권"으로 보고 상한 없이(=TOP_CAP 까지) 전부 뜬다.
+TOP_BAND = 1000          # 실측 시장 84개 — 상위 100위권을 통째로 덮는 지점
+TOP_CAP = 100            # 그래도 폭주 방지 상한(시장이 커지면 여기서 잘린다)
 # 분업(사용자 결정): 저-DPS/저가는 사용자들의 가격검색이 크라우드로 채우고, 고-DPS
 # 끝단은 우리가 전담한다. 그래서 옛 저·중 밴드(450~660 촘촘)를 걷어내고 600~1100 을
 # 촘촘히 덮는다. 400/500 은 크라우드가 아직 작을 때의 최소 baseline.
@@ -826,7 +829,13 @@ def load_banded(page_url, per_band, category=None):
         # 그 층의 floor 를 긋기 충분하고, ">=600 에 247개"처럼 많은 밴드를 100씩 fetch 하면
         # fetch 레이트 리밋을 태운다(실측). 밴드를 촘촘히 두어(680/760/.../1100) DPS 해상도는
         # 밴드 수로, fetch 량은 밴드당 상한으로 각각 관리한다.
-        cap = 30 if lo >= 600 else per_band
+        # 최상위 구간은 상한을 풀어 통째로 뜬다 = "시장 DPS 상위 100개".
+        # 실측(카카오 Runes of Aldur): DPS>=1000 이 시장에 84개, >=1100 은 54개뿐이라
+        # 이 밴드 하나를 다 뜨면 그게 곧 상위 100위권 전체다. 검색 요청은 안 늘고(이미 도는
+        # 밴드) fetch 만 는다. 예전엔 cap 30 + 가격오름차순이라 54개 중 14개만 보였고,
+        # 그래서 곡선 상단이 "우리가 본 것 중 최고"에서 끊겨 시장 진짜 최고를 몰랐다.
+        # 상한(TOP_CAP)은 남겨둔다 — 시장이 커져 이 구간이 수백 개가 되면 fetch 가 폭증한다.
+        cap = TOP_CAP if lo >= TOP_BAND else (30 if lo >= 600 else per_band)
         ids = [i for i in (r.get("result") or [])[:cap] if i not in seen]
         seen.update(ids)
         total = max(total, r.get("total") or 0)
@@ -2090,6 +2099,15 @@ def demo():
     finally:
         globals()["api_get"] = _k_api2
         _STAT_CACHE.clear()
+
+    # 상위 DPS 밴드는 상한을 풀어 통째로 뜬다("DPS 상위 100개") — 아래 밴드는 그대로.
+    def _cap_for(lo, per_band=25):
+        return TOP_CAP if lo >= TOP_BAND else (30 if lo >= 600 else per_band)
+    assert _cap_for(1100) == TOP_CAP and _cap_for(1000) == TOP_CAP, "상위 밴드가 안 풀림"
+    assert _cap_for(920) == 30 and _cap_for(600) == 30, "중간 밴드 상한이 바뀜"
+    assert _cap_for(500) == 25 and _cap_for(400) == 25, "하단 밴드 상한이 바뀜"
+    assert TOP_BAND in THRESHOLDS, "TOP_BAND 가 실제 밴드 목록에 없다 — 영영 안 걸린다"
+    assert TOP_CAP >= 100, "상위 100개를 못 담는다"
 
     # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
     assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
