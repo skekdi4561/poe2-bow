@@ -830,20 +830,28 @@ def resolve_search(page_url):
 # 공격 무기 카테고리 — 거래소 type_filters.filters.category.option 값(EE2 CATEGORY_TO_TRADE_ID 확인).
 # 캐스터(완드/셉터/스태프)는 뺀다: 시장이 주문 모드로 값을 매겨 공격 DPS 곡선이 성립하지 않는다.
 # (id, 파일 접미사, 표시명). 활은 접미사 없이 latest.json(기존 파이프라인 그대로).
+# 실측 근거(2026-08-27): DPS 정렬 검색을 **문턱 없이** 돌린 결과와 EE2 아이템 베이스 수가
+# 정확히 일치했다 — 베이스 29개 이상인 무기만 시장에 매물이 있고(전부 10000+),
+# 베이스가 13개로 균일한 무기는 예외 없이 0건이었다(검·도끼·단검·플레일, 클로는 베이스 0).
+# POE2 는 아직 그 무기들을 출시하지 않았다(정식 출시/후속 업데이트 예정).
 ATTACK_WEAPONS = [
-    ("weapon.bow",       "",         "활"),
-    ("weapon.crossbow",  "crossbow", "쇠뇌"),
+    ("weapon.bow",       "",         "활"),          # 베이스 32, 최고 1534 DPS
+    ("weapon.crossbow",  "crossbow", "쇠뇌"),        # 베이스 29, 최고 1723
+    ("weapon.onemace",   "onemace",  "한손 철퇴"),   # 베이스 43, 최고 1335
+    ("weapon.twomace",   "twomace",  "양손 철퇴"),   # 베이스 41, 최고 1798
+    ("weapon.spear",     "spear",    "창"),          # 베이스 36, 최고 1294
+    ("weapon.warstaff",  "warstaff", "쿼터스태프"),  # 베이스 36, 최고 2025
+]
+# POE2 에 아직 없는 공격 무기 — 출시되면 위 목록으로 옮기면 그대로 수집된다.
+# (id 는 EE2 CATEGORY_TO_TRADE_ID 확인분이라 그대로 쓰면 된다)
+UNRELEASED_WEAPONS = [
     ("weapon.onesword",  "onesword", "한손 검"),
     ("weapon.twosword",  "twosword", "양손 검"),
     ("weapon.oneaxe",    "oneaxe",   "한손 도끼"),
     ("weapon.twoaxe",    "twoaxe",   "양손 도끼"),
-    ("weapon.onemace",   "onemace",  "한손 철퇴"),
-    ("weapon.twomace",   "twomace",  "양손 철퇴"),
-    ("weapon.spear",     "spear",    "창"),
+    ("weapon.dagger",    "dagger",   "단검"),
     ("weapon.flail",     "flail",    "플레일"),
     ("weapon.claw",      "claw",     "클로"),
-    ("weapon.dagger",    "dagger",   "단검"),
-    ("weapon.warstaff",  "warstaff", "쿼터스태프"),
 ]
 CASTER_CATEGORIES = {"weapon.wand", "weapon.sceptre", "weapon.staff"}
 
@@ -2260,7 +2268,7 @@ def demo():
         except _StopCycle:
             pass
         assert _seen_w == [w[1] for w in ATTACK_WEAPONS], _seen_w
-        assert len(_seen_w) == 13 and _seen_w[0] == "", "활이 먼저, 13종 전부"
+        assert len(_seen_w) == len(ATTACK_WEAPONS) and _seen_w[0] == "", "활이 먼저, 전 종목"
         assert "warstaff" in _seen_w, "실패한 무기 뒤가 안 돌았다"
     finally:
         globals()["collect_weapon"], globals()["collect"] = _k_cw, _k_c
@@ -2698,6 +2706,11 @@ def demo():
     _sfx = [s for c, s, n in ATTACK_WEAPONS]
     assert len(_sfx) == len(set(_sfx)), "무기 접미사 중복 — latest 파일이 덮어써진다"
     assert sum(1 for s in _sfx if s == "") == 1 and ATTACK_WEAPONS[0][1] == "", "활은 접미사 없이 latest.json"
+    # 미출시 무기는 수집 목록과 겹치면 안 된다(겹치면 매 사이클 0건 검색을 낭비한다)
+    _un = {c for c, s2, n in UNRELEASED_WEAPONS}
+    assert not (_un & set(_ids)), "미출시 무기가 수집 목록에 있다: %r" % (_un & set(_ids))
+    assert all(c.startswith("weapon.") for c in _un)
+    assert not (_un & CASTER_CATEGORIES), "캐스터는 미출시가 아니라 의도적 제외다"
 
     # 무기 경로 dedup_by_cond_id: 같은 (cond,id)는 한 번만, 다른 cond/다른 id는 보존,
     # id 가 비면 접지 않는다(서로 다른 매물을 뭉개면 안 됨) — 활 merge_harvest (cond,id) 정합.
