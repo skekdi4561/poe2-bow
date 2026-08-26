@@ -591,14 +591,28 @@ def is_off_dps(m):
     return not any(p.search(c) for p in COUNTED_KR)
 
 
+# 옵션 카탈로그 캐시 — base -> (카탈로그, 받은 시각). 게임 패치 전엔 안 바뀌는 정적 데이터라
+# 매 사이클 다시 받을 이유가 없다(무기 순환이면 하루 18회 반복 다운로드였다).
+_STAT_CACHE = {}
+STAT_CACHE_TTL = 6 * 3600       # 6시간. 패치로 옵션이 늘어도 반나절 안에 따라잡는다
+
+
 def stat_catalog(base):
-    """옵션 문구 -> stat id. 91% 매칭됨(남은 건 숫자가 둘인 복합 옵션)."""
+    """옵션 문구 -> stat id. 91% 매칭됨(남은 건 숫자가 둘인 복합 옵션).
+
+    정적 데이터라 캐시한다 — 실패는 캐시하지 않아(예외가 그대로 올라감) 다음 사이클에 다시 시도한다.
+    """
+    hit = _STAT_CACHE.get(base)
+    if hit and time.time() - hit[1] < STAT_CACHE_TTL:
+        return hit[0]
     data = api_get("%s/api/trade2/data/stats" % base)
     cat = {}
     for grp in data.get("result", []):
         for e in grp.get("entries", []):
             t = re.sub(r"\s+", " ", (e.get("text") or "")).strip()
             cat.setdefault(t, e.get("id"))
+    if cat:                                  # 빈 응답은 캐시하지 않는다
+        _STAT_CACHE[base] = (cat, time.time())
     return cat
 
 
@@ -733,17 +747,35 @@ def search_api_url(page_url):
             u.path.replace("/trade2/search/", "/api/trade2/search/", 1))
 
 
+# 저장된 검색 질의문 캐시 — url -> ((base, league_path, league, query), 받은 시각)
+_SEARCH_CACHE = {}
+SEARCH_CACHE_TTL = 900          # 15분. 한 수집 사이클(실측 ~17분) 안의 중복만 접고 다음 사이클은 다시 뜬다
+
+
 def resolve_search(page_url):
     """저장된 검색 링크에서 리그 주소와 질의문을 꺼낸다.
-    환율을 먼저 뜨려면 아이템을 긁기 전에 리그를 알아야 한다."""
+    환율을 먼저 뜨려면 아이템을 긁기 전에 리그를 알아야 한다.
+
+    한 수집 사이클은 같은 URL 로 이것을 세 번 부른다(환율 전 / load_banded / 조건 스윕).
+    응답은 같은데 경로가 /search/ 라 **search 버킷 한도(10초당 5회)를 그대로 소모**한다.
+    게다가 여기는 throttle() 을 안 탔다 — 다른 search 사용처(load_banded/sweep_condition/
+    load_trade/make_harvest_verifier)는 전부 부르는데 여기만 빠져 페이싱 없이 나갔다.
+    캐시로 중복을 없애고(사이클당 3회 -> 1회), 실제로 나갈 때는 throttle 을 태운다.
+    """
+    hit = _SEARCH_CACHE.get(page_url)
+    if hit and time.time() - hit[1] < SEARCH_CACHE_TTL:
+        return hit[0]
     base, api_path = search_api_url(page_url)
     league_path = api_path.rsplit("/", 1)[0]
     # 교환 API 경로에는 "poe2/" 가 없다: /api/trade2/exchange/<리그>
     league = league_path.rsplit("/", 1)[-1]
+    throttle("search")                     # /search/ 버킷을 소모하므로 페이싱 대상이다
     query = api_get(base + api_path).get("query")
     if query is None:
         raise TradeError("저장된 검색을 읽지 못했습니다. 링크를 다시 확인해주세요.")
-    return base, league_path, league, query
+    out = (base, league_path, league, query)
+    _SEARCH_CACHE[page_url] = (out, time.time())
+    return out
 
 
 # 공격 무기 카테고리 — 거래소 type_filters.filters.category.option 값(EE2 CATEGORY_TO_TRADE_ID 확인).
@@ -2005,6 +2037,59 @@ def demo():
         assert best_rates("b", "L", []) == {"거래소": True}           # 폴백 살아있음
     finally:
         globals()["ninja_rates"], globals()["fetch_rates"] = _keep_n, _keep_f
+
+    # resolve_search 캐시: 한 사이클에 같은 URL 3회 호출이 요청 1회로 접히고, throttle 을 탄다.
+    # (search 버킷 소모처인데 예전엔 페이싱 없이 3번 나갔다 — 낭비이자 레이트리밋 위험)
+    _calls, _thr = [], []
+    _k_api, _k_thr = api_get, throttle
+    _SEARCH_CACHE.clear()
+    try:
+        globals()["api_get"] = lambda u, payload=None, _retried=False: (
+            _calls.append(u) or {"query": {"status": {"option": "securable"}}})
+        globals()["throttle"] = lambda b, mw=None: _thr.append(b)
+        _u = "https://poe.kakaogames.com/trade2/search/poe2/L/abc"
+        _a = resolve_search(_u)
+        _b = resolve_search(_u)
+        _c = resolve_search(_u)
+        assert len(_calls) == 1, "같은 URL 3회가 요청 1회로 안 접힘: %d" % len(_calls)
+        assert _thr == ["search"], "search 버킷 throttle 을 안 탐: %r" % _thr
+        assert _a == _b == _c, "캐시가 다른 값을 돌려줌"
+        # 다른 URL 은 따로 뜬다
+        resolve_search("https://poe.kakaogames.com/trade2/search/poe2/L/zzz")
+        assert len(_calls) == 2, _calls
+        # TTL 이 지나면 다시 뜬다(다음 사이클은 새 질의문)
+        _SEARCH_CACHE[_u] = (_a, time.time() - SEARCH_CACHE_TTL - 1)
+        resolve_search(_u)
+        assert len(_calls) == 3, "TTL 만료 후 재요청 안 함: %r" % _calls
+        # 검증 실패 URL 은 캐시에 들어가지 않는다(SSRF 경계가 캐시로 우회되면 안 된다)
+        try:
+            resolve_search("https://evil.com/trade2/search/poe2/L/x")
+            assert False, "허용 밖 호스트가 통과됨"
+        except TradeError:
+            pass
+        assert "https://evil.com/trade2/search/poe2/L/x" not in _SEARCH_CACHE
+    finally:
+        globals()["api_get"], globals()["throttle"] = _k_api, _k_thr
+        _SEARCH_CACHE.clear()
+
+    # stat_catalog 캐시: 정적 게임 데이터라 사이클마다 다시 받지 않는다.
+    _sc, _k_api2 = [], api_get
+    _STAT_CACHE.clear()
+    try:
+        globals()["api_get"] = lambda u, payload=None, _retried=False: (
+            _sc.append(u) or {"result": [{"entries": [{"text": "치명타 확률 +#%", "id": "explicit.x"}]}]})
+        _c1 = stat_catalog("https://poe.kakaogames.com")
+        _c2 = stat_catalog("https://poe.kakaogames.com")
+        assert len(_sc) == 1, "카탈로그를 두 번 받음: %d" % len(_sc)
+        assert _c1 == _c2 and _c1.get("치명타 확률 +#%") == "explicit.x", _c1
+        # 빈 응답은 캐시하지 않는다(다음 사이클에 다시 시도해야 한다)
+        _STAT_CACHE.clear(); _sc.clear()
+        globals()["api_get"] = lambda u, payload=None, _retried=False: (_sc.append(u) or {"result": []})
+        stat_catalog("https://b"); stat_catalog("https://b")
+        assert len(_sc) == 2, "빈 응답을 캐시함"
+    finally:
+        globals()["api_get"] = _k_api2
+        _STAT_CACHE.clear()
 
     # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
     assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
