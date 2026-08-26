@@ -314,7 +314,8 @@ def search_min_dps(base, league_path, query, lo, sort=None):
     """
     import copy
     q = copy.deepcopy(query)
-    q.setdefault("filters", {}).setdefault("equipment_filters", {})      .setdefault("filters", {})["dps"] = {"min": lo}
+    if lo is not None:
+        q.setdefault("filters", {}).setdefault("equipment_filters", {})      .setdefault("filters", {})["dps"] = {"min": lo}
     return api_get(base + league_path, {"query": q, "sort": sort or {"price": "asc"}})
 
 
@@ -326,8 +327,11 @@ def search_top_dps(base, league_path, query, lo=None):
     계속 움직인다 — 정렬은 그 문제 자체를 없앤다(항상 상위 N 개를 정확히 준다).
     거래소가 이 정렬을 거부하면 TradeError 가 올라가고 호출부가 밴딩으로 폴백한다.
     """
-    return search_min_dps(base, league_path, query, lo or THRESHOLDS[0],
-                          sort={"dps": "desc"})
+    # ⚠️ DPS 문턱을 걸지 않는다. 정렬이 이미 최상위를 주므로 문턱은 무의미하고,
+    # 활 기준으로 잡은 값(400)이 저DPS 무기 클래스를 통째로 배제한다 —
+    # 실측: 같은 질의문에 검/도끼/단검이 "시장 0개"였고 문턱이 유일한 차이였다.
+    # 무기마다 DPS 스케일이 다르므로(쿼터스태프 2025 vs 단검) 고정 문턱은 원리적으로 못 맞춘다.
+    return search_min_dps(base, league_path, query, lo, sort={"dps": "desc"})
 
 
 def fetch_ids(base, query_id, ids):
@@ -2190,8 +2194,13 @@ def demo():
             _sent.append(payload) or {"id": "q", "total": 5, "result": []})
         search_top_dps("https://h", "/p", {"filters": {}})
         assert _sent[-1]["sort"] == {"dps": "desc"}, _sent[-1]["sort"]
-        _dps = _sent[-1]["query"]["filters"]["equipment_filters"]["filters"]["dps"]
-        assert _dps == {"min": THRESHOLDS[0]}, _dps      # 상위권도 최저 문턱은 걸어 잡동사니 배제
+        # DPS 문턱을 걸면 안 된다 — 정렬이 최상위를 주므로 불필요하고, 활 기준 문턱(400)이
+        # 저DPS 무기 클래스(검/도끼/단검)를 통째로 0건으로 만들었다(실측).
+        _eq = (_sent[-1]["query"].get("filters") or {}).get("equipment_filters") or {}
+        assert "dps" not in (_eq.get("filters") or {}), _eq
+        # 밴드 폴백은 반대로 문턱을 걸어야 한다(정렬 없이 상위를 좁히는 유일한 수단)
+        search_min_dps("https://h", "/p", {"filters": {}}, THRESHOLDS[-1])
+        assert _sent[-1]["query"]["filters"]["equipment_filters"]["filters"]["dps"] == {"min": THRESHOLDS[-1]}
         search_min_dps("https://h", "/p", {"filters": {}}, 600)
         assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
     finally:
