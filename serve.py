@@ -11,7 +11,7 @@
 """
 import json, os, re, shutil, sqlite3, sys, threading, time, urllib.error, urllib.request, webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote as urlquote
 from statistics import median
 
 # 한국어 윈도우 콘솔은 기본이 cp949라 —, ≥ 같은 글자에서 UnicodeEncodeError 로 죽는다.
@@ -391,6 +391,93 @@ def solve_rates(obs, base_cur="exalted", rounds=MAX_HOPS):
             print("     %s 환율이 %r 로 나와 버립니다 (관측이 서로 안 맞음)" % (cur, v))
             del val[cur], how[cur]
     return val, how
+
+
+# poe.ninja 경제 API — POE2 환율의 1순위 소스.
+# 왜: POE2 는 대량 화폐 거래가 **인게임 자동 거래소**로 옮겨가서, 홈페이지 교환 목록에는
+# 매물이 1~6건밖에 안 남는다(실측). 그 얇은 표본에서 뽑은 환율은 사이클마다 크게 튄다
+# (divine 실측 229.5 -> 255 -> 380 -> 400 -> 575). poe.ninja 는 거래량 기반이라 안정적이고
+# 인게임 거래소까지 반영한다. 리그명도 우리와 같은 문자열을 쓴다("Runes of Aldur", 실측).
+# ToS 준수(https://poe.ninja/docs/api): 경제 엔드포인트만, 연락처 있는 descriptive UA,
+# 시간당 1회(POE2 갱신 주기와 동일)라 과다 폴링 아님. 버전/SLA 가 없어 깨질 수 있으므로
+# **실패하면 조용히 기존 거래소 경로로 폴백**한다 — 이 소스는 최적화지 의존이 아니다.
+NINJA_URL = "https://poe.ninja/poe2/api/economy/exchange/current/overview"
+NINJA_UA = "poe2-bow-appraiser/1.0 (personal price tool; contact: skekdi4561@gmail.com)"
+# poe.ninja 는 화폐를 `lines[].id` 로 주는데 그 문자열이 우리 TRADE_CURRENCIES 와 그대로 같다
+# (실측: "exalted"/"chaos"/"divine"/"annul") — 별도 이름 매핑표가 필요 없다.
+
+
+def ninja_rates(league, currencies=None):
+    """poe.ninja 에서 엑잘 기준 환율을 뜬다. fetch_rates 와 **같은 형태**로 돌려주므로
+    하류(guard_rates/write_latest/사이트/위젯)는 출처를 몰라도 된다. 실패하면 None.
+
+    poe.ninja 는 divine 기준(primaryValue = 1개당 divine)이라 엑잘로 환산한다:
+        1 X = (X.primaryValue / exalted.primaryValue) 엑잘
+    """
+    try:
+        url = "%s?league=%s&type=Currency" % (NINJA_URL, urlquote(league))
+        req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                                   "User-Agent": NINJA_UA})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        print("     poe.ninja 환율 건너뜀(거래소 교환으로 대체): %s: %s" % (type(e).__name__, e))
+        return None
+
+    # 실측 형태: {"core":…, "lines":[{"id":"chaos","primaryValue":0.09036,…}], "items":…}
+    # 버전/SLA 가 없어 형태가 바뀔 수 있으므로 lines 가 없으면 dict 안의 리스트를 찾아본다.
+    items = data.get("lines") if isinstance(data, dict) else data
+    if not isinstance(items, list) or not items:
+        items = None
+        if isinstance(data, dict):
+            for v in data.values():
+                if isinstance(v, list) and v and isinstance(v[0], dict):
+                    items = v
+                    break
+    if not items:
+        print("     poe.ninja 응답 형태를 못 읽음(거래소 교환으로 대체)")
+        return None
+
+    prim = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        cur = it.get("id")                      # 우리 화폐 키와 같은 문자열(실측)
+        v = it.get("primaryValue")
+        if cur in TRADE_CURRENCIES and isinstance(v, (int, float)) and v > 0:
+            prim[cur] = float(v)
+
+    ex = prim.get("exalted")
+    if not ex or ex <= 0 or "divine" not in prim:
+        print("     poe.ninja 에서 기준 화폐를 못 찾음(거래소 교환으로 대체)")
+        return None
+
+    out = {"exalted": {"rate": 1.0, "how": "기준"}}
+    for cur, v in prim.items():
+        if cur == "exalted":
+            continue
+        rate = v / ex                                   # 1개당 엑잘
+        if not (isinstance(rate, float) and rate == rate and rate != float("inf") and rate >= 1.0):
+            continue                                    # 비정상값은 버리고 guard_rates 가 메우게
+        out[cur] = {"rate": round(rate, 6), "how": "poe.ninja"}
+    if len(out) < 2:
+        return None
+    print("     --- 환율 (엑잘 기준, poe.ninja) ---")
+    for cur, d in sorted(out.items(), key=lambda kv: -kv[1]["rate"]):
+        print("     1 %-8s = %10.4f ex  (%s)" % (cur, d["rate"], d.get("how")))
+    return out
+
+
+def best_rates(base, league, currencies):
+    """환율 1순위 = poe.ninja(거래량 기반·인게임 거래소 반영), 실패 시 거래소 교환으로 폴백.
+
+    폴백을 항상 남겨두는 이유: poe.ninja 는 버전/SLA 가 없어 예고 없이 깨질 수 있다(ToS 명시).
+    부수 효과로, poe.ninja 가 성공하면 교환 API 12쌍 호출이 통째로 빠져 레이트 리밋 여유가 는다.
+    """
+    r = ninja_rates(league, currencies)
+    if r:
+        return r
+    return fetch_rates(base, league, currencies)
 
 
 def fetch_rates(base, league, currencies):
@@ -1239,7 +1326,7 @@ def collect(url, limit=100):
         print("     !! 경고: 저장 검색의 상태가 '즉시 구매 가능'(securable)이 아닙니다: %r"
               % (q0.get("status"),))
         print("     !! 사이트 문구와 어긋납니다 — 검색 필터를 확인하세요.")
-    rates = fetch_rates(base, league, TRADE_CURRENCIES)
+    rates = best_rates(base, league, TRADE_CURRENCIES)
     rates = guard_rates(rates, rate_memory())
 
     bows, total, skipped, base, league = load_banded(url, limit)
@@ -1312,7 +1399,7 @@ def collect_weapon(url, limit, cat_id, suffix):
     무기가 섞인다. 현재 스냅샷 곡선만 쓴다. 환율은 무기 무관이라 그대로 공유한다."""
     taken = int(time.time() * 1000)
     base, league_path0, league, q0 = resolve_search(url)
-    rates = guard_rates(fetch_rates(base, league, TRADE_CURRENCIES), rate_memory())
+    rates = guard_rates(best_rates(base, league, TRADE_CURRENCIES), rate_memory())
     rows, total, skipped, base, league = load_banded(url, limit, category=cat_id)
     conds = []
     try:
@@ -1851,6 +1938,54 @@ def demo():
     ok = search_api_url("https://evil.com@poe.kakaogames.com/trade2/search/poe2/L/x")
     assert ok == ("https://poe.kakaogames.com", "/api/trade2/search/poe2/L/x"), ok  # userinfo 위장은 무시
     assert search_api_url("https://www.pathofexile.com/trade2/search/poe2/Standard/xy")[0]         == "https://www.pathofexile.com"
+
+    # poe.ninja 환율: divine 기준 primaryValue 를 엑잘 기준으로 환산하고, 형태가 어긋나면
+    # 조용히 None(→ best_rates 가 거래소 교환으로 폴백). 네트워크는 대역해서 안 탄다.
+    # 실측 응답 형태 그대로(2026-08-26 poe.ninja Runes of Aldur): {"lines":[{"id":…,"primaryValue":…}]}
+    _ninja_payload = {"core": {}, "items": {}, "lines": [
+        {"id": "divine", "primaryValue": 1.0, "maxVolumeCurrency": "chaos"},
+        {"id": "chaos", "primaryValue": 0.09036, "maxVolumeRate": 11.07},
+        {"id": "exalted", "primaryValue": 0.002697},
+        {"id": "annul", "primaryValue": 0.3828},
+        {"id": "perfect-exalted-orb", "primaryValue": 5.0},       # 우리가 안 쓰는 화폐는 무시
+    ]}
+    class _FakeResp:
+        def __init__(self, obj): self._b = json.dumps(obj).encode("utf-8")
+        def read(self): return self._b
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    _keep_open = urllib.request.urlopen
+    try:
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(_ninja_payload)
+        _nr = ninja_rates("Runes of Aldur")
+        assert _nr and _nr["exalted"] == {"rate": 1.0, "how": "기준"}, _nr
+        # 1 divine = 1.0/0.002697 ≈ 370.8 엑잘 (실측 관측치와 같은 자릿수)
+        assert 370 < _nr["divine"]["rate"] < 372, _nr["divine"]
+        assert 33 < _nr["chaos"]["rate"] < 34, _nr["chaos"]
+        assert 141 < _nr["annul"]["rate"] < 143, _nr["annul"]
+        assert all(v["how"] == "poe.ninja" for k, v in _nr.items() if k != "exalted")
+        assert "perfect-exalted-orb" not in _nr and len(_nr) == 4, _nr
+        # 형태가 어긋나거나(기준 화폐 없음) 값이 이상하면 None → 폴백
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(
+            {"lines": [{"id": "divine", "primaryValue": 1.0}]})      # exalted 없음
+        assert ninja_rates("L") is None
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp({"unexpected": "shape"})
+        assert ninja_rates("L") is None
+        def _boom(req, timeout=None): raise urllib.error.URLError("down")
+        urllib.request.urlopen = _boom
+        assert ninja_rates("L") is None                              # 네트워크 실패도 조용히 None
+    finally:
+        urllib.request.urlopen = _keep_open
+    # best_rates: poe.ninja 가 되면 그걸 쓰고, None 이면 거래소 교환으로 폴백한다
+    _keep_n, _keep_f = ninja_rates, fetch_rates
+    try:
+        globals()["ninja_rates"] = lambda league, currencies=None: {"exalted": {"rate": 1.0}, "x": 1}
+        globals()["fetch_rates"] = lambda *a: {"거래소": True}
+        assert best_rates("b", "L", []) == {"exalted": {"rate": 1.0}, "x": 1}
+        globals()["ninja_rates"] = lambda league, currencies=None: None
+        assert best_rates("b", "L", []) == {"거래소": True}           # 폴백 살아있음
+    finally:
+        globals()["ninja_rates"], globals()["fetch_rates"] = _keep_n, _keep_f
 
     # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
     assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
