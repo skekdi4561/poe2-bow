@@ -885,6 +885,18 @@ def load_top_dps(page_url, category=None):
 
     ids = (r.get("result") or [])[:TOP_CAP]
     total = r.get("total") or 0
+    if not total:
+        # 매물이 0이면 "그 무기가 없다"가 아니라 **질의문이 그 무기와 안 맞는다**일 때가 많다.
+        # 저장된 검색은 활 기준이라 활 전용 옵션 조건(stats)이 남아 있으면 근접 무기는 0이 되고,
+        # 카테고리 id 가 틀려도 거래소는 오류 대신 0건을 돌려준다 — 둘을 가르려면 질의문을 봐야 한다.
+        _f = (query.get("filters") or {})
+        _tf = ((_f.get("type_filters") or {}).get("filters") or {})
+        print("     [진단] 매물 0 — category=%r rarity=%r stats=%d개 filters=%s"
+              % (_tf.get("category"), _tf.get("rarity"),
+                 len(query.get("stats") or []), list(_f)))
+        _st = query.get("stats") or []
+        if _st:
+            print("     [진단] stats: %s" % json.dumps(_st, ensure_ascii=False)[:400])
     rows = fetch_ids(base, r["id"], ids) if ids else []
     # normalize() 가 되돌린 것 = 가격 화폐가 PRICE_CURRENCIES 밖이거나 GGG 가 DPS 를 안 준 매물.
     skipped = len(ids) - len(rows)
@@ -1478,6 +1490,11 @@ def collect_weapon(url, limit, cat_id, suffix):
     rows, total, skipped, base, league = load_top_dps(url, category=cat_id)
     conds = []                                   # 조건 곡선 제거 — collect() 주석 참고
     rows = dedup_by_cond_id(rows)                 # 활 merge_harvest 의 (cond,id) 접기와 정합
+    if not rows:
+        # 빈 결과로 파일을 덮지 않는다 — 일시적 실패나 질의문 불일치로 0이 나왔을 때
+        # 지난 정상 수집분을 날려버리면 사이트가 "아직 수집 안 됨"으로 후퇴한다.
+        print("     %s 수집 0개 — 파일을 갱신하지 않는다(지난 데이터 보존)" % suffix)
+        return 0
     out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped,
                   "rates": rates, "conds": conds, "bows": rows, "trend": None,
@@ -2193,6 +2210,26 @@ def demo():
                        "item": {"typeLine": "Bow", "frameType": 2,
                                 "extended": {"pdps": 900.0, "edps": 200.0}}})
     assert _junk is None, "하급 화폐가 통과됨"
+
+    # 무기 수집이 0개면 파일을 갱신하지 않는다 — 지난 정상 데이터를 빈 것으로 덮으면 안 된다.
+    _kw_write, _kw_load, _kw_rates, _kw_res = write_latest, load_top_dps, best_rates, resolve_search
+    _wrote = []
+    try:
+        globals()["write_latest"] = lambda payload, path=None: _wrote.append(path)
+        globals()["resolve_search"] = lambda u: ("https://h", "/p", "L", {})
+        globals()["best_rates"] = lambda b, l, c: {"exalted": {"rate": 1.0}}
+        globals()["load_top_dps"] = lambda u, category=None: ([], 0, 0, "https://h", "L")
+        assert collect_weapon("u", 25, "weapon.onesword", "onesword") == 0
+        assert _wrote == [], "0개인데 파일을 썼다: %r" % _wrote
+        globals()["load_top_dps"] = lambda u, category=None: (
+            [{"name": "x", "pdps": 900.0, "edps": 100.0, "aps": 1.4, "crit": 6.0,
+              "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "id": "i1"}],
+            5, 0, "https://h", "L")
+        assert collect_weapon("u", 25, "weapon.crossbow", "crossbow") == 1
+        assert _wrote and _wrote[-1].endswith("latest.crossbow.json"), _wrote
+    finally:
+        globals()["write_latest"], globals()["load_top_dps"] = _kw_write, _kw_load
+        globals()["best_rates"], globals()["resolve_search"] = _kw_rates, _kw_res
 
     # collect_loop(weapons=True): 한 사이클에 13종을 전부 돌고,
     # 한 무기가 실패해도 나머지가 계속 돈다(예전엔 사이클마다 한 종씩 순환).
