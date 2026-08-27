@@ -40,7 +40,10 @@ function validRow(r) {
   if (typeof r.name !== "string" || r.name.length > 120) return null;
   if (!Array.isArray(r.mods) || r.mods.length > 40) return null;
   if (!r.mods.every((m) => typeof m === "string" && m.length <= 200)) return null;
-  if (r.league !== "Standard") return null; // 감정소는 카카오 스탠다드만
+  // 리그는 여기서 고르지 않는다 — 값만 검증해 그대로 싣고, **수집기가 자기 리그와**
+  // **대조해 거른다**(serve.py merge_harvest). 예전엔 "Standard" 만 받았는데 수집기는
+  // 도전 리그를 뜨고 있어서, 통과한 스탠다드 매물이 도전 리그 곡선에 섞여 들어갔다.
+  if (typeof r.league !== "string" || !r.league || r.league.length > 64) return null;
   return {
     id: r.id,
     name: r.name,
@@ -53,6 +56,7 @@ function validRow(r) {
     rarity: r.rarity ?? "",
     mods: r.mods,
     fee: num(r.fee) && r.fee > 0 ? r.fee : null,
+    league: r.league,
   };
 }
 

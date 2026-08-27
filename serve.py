@@ -1092,7 +1092,14 @@ def last_url():
 HARVEST_URL = "https://poe2-bow-harvest.skekdi4561.workers.dev"
 
 
-def merge_harvest(merged, rows=None, verifier=None):
+def _norm_league(v):
+    """리그 이름 비교용 정규화 — 거래소 URL 에서 잘라온 값은 퍼센트 인코딩돼 있고
+    ("Runes%20of%20Aldur") 클라이언트가 보내는 값은 공백이라("Runes of Aldur") 그냥
+    비교하면 항상 다르다. 대소문자·앞뒤 공백도 흡수한다."""
+    return urlunquote(str(v or "")).strip().lower()
+
+
+def merge_harvest(merged, rows=None, verifier=None, league=None):
     """크라우드 수집 행을 24시간 합집합에 합류시킨다.
 
     오버레이 앱(poe2-appraiser)은 사용자가 스스로 한 활 가격 검색의 응답을
@@ -1143,6 +1150,13 @@ def merge_harvest(merged, rows=None, verifier=None):
     for r in rows:
         if not isinstance(r, dict) or r.get("fee") is None:
             continue                     # 즉시구매 표시가 없는 행은 미검증 — 안 섞는다
+        # ⚠️ 리그가 다르면 아예 다른 시장이다 — 스탠다드 매물이 도전 리그 곡선에 섞이면
+        # 같은 DPS 가 전혀 다른 가격을 갖는다(실사고: 수집기는 Runes of Aldur 인데
+        # 크라우드 게이트가 "Standard" 로 하드코딩돼 있어 스탠다드 행이 합쳐지고 있었다).
+        # 리그를 코드에 박지 말고 **행이 실어온 값과 이번 수집의 리그를 대조**한다 —
+        # 그래야 리그가 바뀌어도 클라이언트 수정 없이 따라간다.
+        if league and _norm_league(r.get("league")) != _norm_league(league):
+            continue
         t = r.get("t") or 0
         if not isinstance(t, (int, float)) or t < cut:
             continue
@@ -1455,7 +1469,8 @@ def collect(url, limit=100):
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
     merged = merge_harvest(
         recent_rows(),
-        verifier=make_harvest_verifier(base, league_path0, q0))
+        verifier=make_harvest_verifier(base, league_path0, q0),
+        league=league)                       # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
     try:
         trend = build_trend()
     except Exception as e:                       # 추세는 부가정보 — 실패해도 수집은 나간다
@@ -2213,6 +2228,20 @@ def demo():
         assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
     finally:
         globals()["api_get"] = _k_api3
+    # 크라우드 행의 리그 대조 — 다른 리그 매물이 섞이면 같은 DPS 가 다른 가격이 된다.
+    assert _norm_league("Runes%20of%20Aldur") == _norm_league("Runes of Aldur")
+    assert _norm_league(" STANDARD ") == _norm_league("Standard")
+    assert _norm_league(None) == "" and _norm_league("") == ""
+    _mk = lambda lg, i: {"id": i, "name": "n", "pdps": 900.0, "edps": 0.0, "aps": 1.4,
+                         "crit": 6.0, "price": 5, "cur": "divine", "rarity": "Rare",
+                         "mods": [], "fee": 1, "league": lg, "t": int(time.time() * 1000)}
+    _same = merge_harvest([], rows=[_mk("Runes of Aldur", "L1")], league="Runes%20of%20Aldur")
+    assert len(_same) == 1, "같은 리그인데 걸러졌다: %r" % _same
+    _diff = merge_harvest([], rows=[_mk("Standard", "L2")], league="Runes%20of%20Aldur")
+    assert _diff == [], "다른 리그 매물이 곡선에 섞였다: %r" % _diff
+    # league 를 안 주면(옛 호출부) 예전처럼 전부 통과 — 하위 호환
+    assert len(merge_harvest([], rows=[_mk("Standard", "L3")])) == 1
+
     # 매물 가격 화폐: 미러는 받고(시장 최상위 활이 여기 몰려 있다) 하급 화폐는 계속 배제.
     assert "mirror" in PRICE_CURRENCIES, "미러를 빼면 시장 최상위 활이 통째로 사라진다"
     assert all(c in PRICE_CURRENCIES for c in TRADE_CURRENCIES)
