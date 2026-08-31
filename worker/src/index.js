@@ -8,7 +8,19 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Access-Control-Allow-Headers": "content-type",
 };
-const CURRENCIES = new Set(["exalted", "chaos", "divine", "annul"]);
+// 미러는 시장 최상위 매물이 몰려 있어 받는다(serve.py PRICE_CURRENCIES 와 같은 목록).
+// 빼면 최상위 무기가 크라우드에서 통째로 사라진다.
+const CURRENCIES = new Set(["exalted", "chaos", "divine", "annul", "mirror"]);
+// 수집 대상 무기(캐스터 제외·POE2 에 실제 있는 6종, serve.py ATTACK_WEAPONS 와 같은 목록).
+// row JSON 안에 담으므로 D1 스키마 변경이 없다. 값이 없는 옛 행은 수집기가 활로 본다.
+const CATEGORIES = new Set([
+  "weapon.bow",
+  "weapon.crossbow",
+  "weapon.onemace",
+  "weapon.twomace",
+  "weapon.spear",
+  "weapon.warstaff",
+]);
 const RARITIES = new Set(["Normal", "Magic", "Rare", "Unique", ""]);
 
 let schemaReady = false;
@@ -44,6 +56,8 @@ function validRow(r) {
   // **대조해 거른다**(serve.py merge_harvest). 예전엔 "Standard" 만 받았는데 수집기는
   // 도전 리그를 뜨고 있어서, 통과한 스탠다드 매물이 도전 리그 곡선에 섞여 들어갔다.
   if (typeof r.league !== "string" || !r.league || r.league.length > 64) return null;
+  // 무기 종류: 없으면 활(게이트가 활 전용이던 시절의 옛 행), 있으면 목록 안이어야 한다.
+  if (r.cat != null && !CATEGORIES.has(r.cat)) return null;
   return {
     id: r.id,
     name: r.name,
@@ -57,6 +71,7 @@ function validRow(r) {
     mods: r.mods,
     fee: num(r.fee) && r.fee > 0 ? r.fee : null,
     league: r.league,
+    cat: r.cat ?? "weapon.bow",
   };
 }
 

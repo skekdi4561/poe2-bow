@@ -1099,7 +1099,7 @@ def _norm_league(v):
     return urlunquote(str(v or "")).strip().lower()
 
 
-def merge_harvest(merged, rows=None, verifier=None, league=None):
+def merge_harvest(merged, rows=None, verifier=None, league=None, category=None):
     """크라우드 수집 행을 24시간 합집합에 합류시킨다.
 
     오버레이 앱(poe2-appraiser)은 사용자가 스스로 한 활 가격 검색의 응답을
@@ -1156,6 +1156,11 @@ def merge_harvest(merged, rows=None, verifier=None, league=None):
         # 리그를 코드에 박지 말고 **행이 실어온 값과 이번 수집의 리그를 대조**한다 —
         # 그래야 리그가 바뀌어도 클라이언트 수정 없이 따라간다.
         if league and _norm_league(r.get("league")) != _norm_league(league):
+            continue
+        # 무기 종류도 대조한다 — 곡선은 무기별로 따로이므로 섞이면 축척이 무너진다
+        # (쿼터스태프 최고 2025 DPS vs 창 1294 — 같은 그래프에 놓을 값이 아니다).
+        # cat 이 없는 옛 행은 활로 본다(그때 게이트가 활 전용이었다).
+        if category and (r.get("cat") or "weapon.bow") != category:
             continue
         t = r.get("t") or 0
         if not isinstance(t, (int, float)) or t < cut:
@@ -1470,7 +1475,8 @@ def collect(url, limit=100):
     merged = merge_harvest(
         recent_rows(),
         verifier=make_harvest_verifier(base, league_path0, q0),
-        league=league)                       # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
+        league=league,                       # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
+        category="weapon.bow")               # 활 곡선에는 활 매물만
     try:
         trend = build_trend()
     except Exception as e:                       # 추세는 부가정보 — 실패해도 수집은 나간다
@@ -1508,15 +1514,25 @@ def dedup_by_cond_id(rows):
 def collect_weapon(url, limit, cat_id, suffix):
     """비-활 공격무기 한 종의 현재 시세를 떠서 latest.<suffix>.json 에 쓴다.
 
-    활(collect)과 달리 24h 합집합·크라우드 병합·추세는 아직 안 붙인다 — 그 기계장치
-    (bows 테이블/recent_rows/merge_harvest/build_trend)가 활 전용이라, 여기 끌어들이면
-    무기가 섞인다. 현재 스냅샷 곡선만 쓴다. 환율은 무기 무관이라 그대로 공유한다."""
+    24h 합집합(bows 테이블)과 추세는 아직 활 전용이라 안 붙인다. 다만 **크라우드는 붙인다** —
+    merge_harvest 가 이제 무기별로 걸러주므로 섞일 위험이 없고, 수집기가 TOP100 만 뜨는 만큼
+    중·하위 구간은 크라우드가 채워야 곡선이 완성된다. 환율은 무기 무관이라 그대로 공유한다."""
     taken = int(time.time() * 1000)
     base, league_path0, league, q0 = resolve_search(url)
     rates = guard_rates(best_rates(base, league, TRADE_CURRENCIES), rate_memory())
     rows, total, skipped, base, league = load_top_dps(url, category=cat_id)
     conds = []                                   # 조건 곡선 제거 — collect() 주석 참고
     rows = dedup_by_cond_id(rows)                 # 활 merge_harvest 의 (cond,id) 접기와 정합
+    # 크라우드 합류 — 이 무기·이 리그 행만. 최전선을 잠식하는 행은 거래소로 진위 확인하되
+    # 예산은 활(8)보다 작게 잡는다(무기가 6종이라 사이클당 총량이 6배가 된다).
+    try:
+        rows = merge_harvest(
+            rows,
+            verifier=make_harvest_verifier(base, league_path0,
+                                           with_category(q0, cat_id), budget=3),
+            league=league, category=cat_id)
+    except Exception as e:                    # 크라우드는 부가정보 — 실패해도 수집은 나간다
+        print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
     if not rows:
         # 빈 결과로 파일을 덮지 않는다 — 일시적 실패나 질의문 불일치로 0이 나왔을 때
         # 지난 정상 수집분을 날려버리면 사이트가 "아직 수집 안 됨"으로 후퇴한다.
@@ -2228,6 +2244,22 @@ def demo():
         assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
     finally:
         globals()["api_get"] = _k_api3
+    # 크라우드 행의 무기 대조 — 곡선이 무기별로 갈리므로 섞이면 축척이 무너진다.
+    _mkw = lambda cat, i: {"id": i, "name": "n", "pdps": 900.0, "edps": 0.0, "aps": 1.4,
+                           "crit": 6.0, "price": 5, "cur": "divine", "rarity": "Rare",
+                           "mods": [], "fee": 1, "league": "L", "cat": cat,
+                           "t": int(time.time() * 1000)}
+    assert len(merge_harvest([], rows=[_mkw("weapon.spear", "W1")],
+                             league="L", category="weapon.spear")) == 1
+    assert merge_harvest([], rows=[_mkw("weapon.spear", "W2")],
+                         league="L", category="weapon.bow") == [], "다른 무기가 섞였다"
+    # cat 이 없는 옛 행은 활로 본다(그때 게이트가 활 전용이었다)
+    _old = {k: v for k, v in _mkw("x", "W3").items() if k != "cat"}
+    assert len(merge_harvest([], rows=[_old], league="L", category="weapon.bow")) == 1
+    assert merge_harvest([], rows=[_old], league="L", category="weapon.spear") == []
+    # category 를 안 주면 전부 통과(하위 호환)
+    assert len(merge_harvest([], rows=[_mkw("weapon.spear", "W4")], league="L")) == 1
+
     # 크라우드 행의 리그 대조 — 다른 리그 매물이 섞이면 같은 DPS 가 다른 가격이 된다.
     assert _norm_league("Runes%20of%20Aldur") == _norm_league("Runes of Aldur")
     assert _norm_league(" STANDARD ") == _norm_league("Standard")
