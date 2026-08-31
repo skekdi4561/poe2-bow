@@ -562,7 +562,7 @@ function priceAt(front, d){
 const COUNTED = [
   /increased Physical Damage|^물리 피해 [\d.]+% 증가/i,
   /Adds \d|피해 \d+~\d+ 추가/i,
-  /increased Attack Speed|^공격 속도 [\d.]+% 증가/i,
+  /increased Attack Speed|reduced Attack Speed|^공격 속도 [\d.]+% (증가|감소)/i,
 ];
 // 반드시 마크업을 벗긴 뒤 판별한다 — "[Physical|물리] 피해"는 "물리 피해"와 글자가 안 붙어 있다
 const isOffDps = m => !COUNTED.some(re => re.test(cleanMod(m)));
@@ -759,13 +759,31 @@ function buildRates(){
 // 조건 목록 = 검색으로 직접 잰 것(정확) + 표본에서 분류만 한 것(공짜, 잠정).
 // 분류는 순식간이라 전부 띄우고, 검색은 느리니 회차마다 일부만 채워진다.
 // 어느 쪽인지 화면에 밝히지 않으면 신뢰도가 다른 값이 뒤섞여 보인다.
+// 옵션 목록의 표시 순서. 빈도만으로 줄세우면 유용도와 어긋난다 —
+// 실측(활 364매물): '반려수의 공격 속도'(133)가 '모든 투사체 스킬 레벨'(120)보다
+// 위에 왔다. 앞의 것은 동료 빌드 전용이라 무기 값과 거의 무관하고, 뒤의 것은
+// 이 무기의 가격을 가장 크게 밀어올리는 옵션이다.
+// 그래서 세 단계로만 나눈다(취향이 아니라 '무기 성능에 직결되는가' 하나의 기준):
+//   0 = 무기 성능 직결(스킬 레벨·치명타·흡수·추가 발사체)
+//   1 = 그 외 대부분
+//   2 = 무기가 아니라 다른 것에 붙는 효과(반려수·소환수) — 맨 아래로
+// 같은 단계 안에서는 기존대로 빈도순.
+const OPT_TOP = /스킬 레벨|치명타|흡수|추가로 발사|추가 화살|Skill Level|Critical|Leech/;
+const OPT_BOTTOM = /반려수|소환수|Companion|Minion/;
+function optRank(key){
+  if (OPT_BOTTOM.test(key)) return 2;
+  if (OPT_TOP.test(key)) return 0;
+  return 1;
+}
+const byUsefulness = (ka, na, kb, nb) => optRank(ka) - optRank(kb) || nb - na;
+
 function localConds(base){
   const cnt = new Map();
   for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
   const measured = new Set(snapConds.map(c => condKey(c)));
   return [...cnt.entries()]
     .filter(([k, n]) => !measured.has(k) && n >= 3)
-    .sort((a, b) => b[1] - a[1])
+    .sort((a, b) => byUsefulness(a[0], a[1], b[0], b[1]))
     .slice(0, 12)
     .map(([k, n]) => ({ label: k, n, local: true }));
 }
@@ -819,7 +837,8 @@ function buildFilters(base){
       groups.set(k, g);
     }
   }
-  const keys = [...groups.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 8);
+  const keys = [...groups.entries()]
+    .sort((a, b) => byUsefulness(a[0], a[1].n, b[0], b[1].n)).slice(0, 8);
   for (const k of Object.keys(reqs)) if (!groups.has(k)) delete reqs[k];   // 사라진 옵션의 조건은 버린다
 
   if (!keys.length) {
@@ -946,7 +965,8 @@ function optionFronts(all){
   const measured = new Set(snapConds.map(c => condKey(c)));
   const cnt = new Map();
   for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
-  for (const [k, n] of [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+  for (const [k, n] of [...cnt.entries()]
+       .sort((a, b) => byUsefulness(a[0], a[1], b[0], b[1])).slice(0, 12)) {
     if (measured.has(k) || n < 3) continue;   // 표본 1~2개로는 곡선이라 부를 게 없다
     // 롤(수치) 구간으로 세분화 — 관측된 분포의 사분위에서 문턱을 뽑는다.
     // 게임 티어표 없이도 시장에 실제로 도는 굴림 구간이 그대로 계단이 된다.
@@ -1414,6 +1434,23 @@ $('trade-go').addEventListener('click', async () => {
     for (const bgt of [10, 15, 25, 35, 45]) {
       if (dpsAt(part, bgt) > dpsAt(whole, bgt)) throw new Error('dpsAt monotone ' + bgt);
     }
+
+    // 옵션 표시 순서: 무기 성능 직결 > 그 외 > 다른 대상(반려수)
+    // 실측 근거 — 활에서 '반려수의 공격 속도'(133)가 '모든 투사체 스킬 레벨'(120)보다
+    // 위에 오던 것을 바로잡는다.
+    if (optRank('모든 투사체 스킬 레벨 #') !== 0) throw new Error('스킬 레벨은 최상위');
+    if (optRank('치명타 확률 #%') !== 0 || optRank('물리 공격 피해의 #%를 생명력으로 흡수') !== 0)
+      throw new Error('치명타/흡수는 최상위');
+    if (optRank('반려수의 공격 속도 #% 증가') !== 2) throw new Error('반려수는 최하위');
+    if (optRank('정확도 #') !== 1) throw new Error('그 외는 중간');
+    // 빈도가 높아도 반려수는 스킬 레벨보다 아래여야 한다
+    if (byUsefulness('반려수의 공격 속도 #% 증가', 133, '모든 투사체 스킬 레벨 #', 120) <= 0)
+      throw new Error('빈도가 유용도를 이겼다');
+    // 같은 등급 안에서는 빈도순 유지
+    if (byUsefulness('정확도 #', 50, '민첩 #', 90) <= 0) throw new Error('동급은 빈도순');
+    // 로컬 공격 속도는 증가/감소 둘 다 DPS 에 이미 반영 — 조건 후보에서 빠져야 한다
+    if (isOffDps('공격 속도 12% 감소')) throw new Error('공격 속도 감소도 이미 셈');
+    if (isOffDps('공격 속도 12% 증가')) throw new Error('공격 속도 증가는 이미 셈');
 
     if (modKey('38% increased Critical Hit Chance') !== '#% increased Critical Hit Chance') throw new Error('modKey');
     // 한국 거래소 실제 응답 형태 (이중 언어 마크업)

@@ -631,7 +631,9 @@ def mod_val(m):
 # "피해의 #%를 추가 카오스 피해로 획득"을 잘못 잡아서, 실제 "화염 피해 10~16 추가" 형태만
 # 잡도록 범위 표기를 요구한다.
 COUNTED_KR = [re.compile(p) for p in
-              (r"^물리 피해 [\d.]+% 증가", r"피해 \d+~\d+ 추가", r"^공격 속도 [\d.]+% 증가",
+              (r"^물리 피해 [\d.]+% 증가", r"피해 \d+~\d+ 추가",
+               # 로컬 공격 속도는 감소도 DPS(aps)에 이미 반영된다 — 증가만 잡으면 비대칭
+               r"^공격 속도 [\d.]+% (증가|감소)", r"reduced Attack Speed",
                r"increased Physical Damage", r"Adds \d", r"increased Attack Speed")]
 
 
@@ -2063,6 +2065,8 @@ def demo():
     assert not is_off_dps("[Physical|물리] 피해 118% 증가")
     assert not is_off_dps("[Fire|화염] 피해 10~16 추가")
     assert not is_off_dps("공격 속도 12% 증가")
+    assert not is_off_dps("공격 속도 12% 감소")   # 감소도 이미 DPS 에 반영
+    assert is_off_dps("반려수의 공격 속도 14% 증가")  # 동료 옵션은 무기 DPS 밖
     assert is_off_dps("[Companion|반려수]의 [Attack|공격] 속도 14% 증가"), "반려수 공속은 DPS 밖이다"
     assert is_off_dps("접근해 있는 반려수의 공격 속도 9% 증가")
     assert is_off_dps("피해의 6%를 추가 카오스 피해로 획득"), "'추가 ~로 획득'은 무기 DPS 가 아니다"
