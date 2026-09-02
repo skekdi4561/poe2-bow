@@ -1328,7 +1328,10 @@ def write_latest(payload, path=None):
 
 
 # 가격 추세 앵커 — 시장 실측 범위(204~1395)에서 저·중·고 대표점. "지금 살까 기다릴까"용.
-TREND_ANCHORS = [500, 700, 900]
+# "top" = 그 스냅샷(DPS 상위 100)에 든 매물 중 최저가 — TOP100 에 드는 **진입 가격**. 예전 앵커 500/700/900 은
+# 수집이 TOP100(최저 DPS ~890)으로 바뀐 뒤 전부 같은 최저가로 수렴해 세 선이 겹쳐 그려졌다(35점 중 20점 동일).
+# 한 선으로 단순화(2026-09-03 사용자 결정). 숫자 앵커("DPS ≥ a 최저가")는 그대로 지원한다.
+TREND_ANCHORS = ["top"]
 
 
 def build_trend(hours=72, anchors=None, con=None):
@@ -1337,6 +1340,7 @@ def build_trend(hours=72, anchors=None, con=None):
     이미 snapshots.db 에 쌓인 이력을 쓰는 것 — 새 데이터 소스 0. 각 스냅샷은 자기
     시점의 rates 를 저장하므로 그때 환율로 엑잘 환산해야 시점 간 비교가 옳다.
     최저가는 그 DPS 이상 활 중 가장 싼 것(최전선 floor). 희귀만(곡선과 같은 기준).
+    앵커 "top" 은 DPS 문턱 없이 스냅샷 전체의 최저가 — 스냅샷이 곧 TOP100 이므로 "TOP100 진입 가격"이다.
     """
     anchors = anchors or TREND_ANCHORS
     cut = int((time.time() - hours * 3600) * 1000)
@@ -1371,7 +1375,7 @@ def build_trend(hours=72, anchors=None, con=None):
                     r = rate_of(cur)
                     if r <= 0 or not price:
                         continue
-                    if (pdps or 0) + (edps or 0) < a:
+                    if a != "top" and (pdps or 0) + (edps or 0) < a:
                         continue
                     ex = price * r
                     if best is None or ex < best:
@@ -2823,6 +2827,10 @@ def demo():
         # 앵커 900 은 s1·s2 둘 다 매물 없음 → floors 비어 그 스냅샷 제외
         _tr2 = build_trend(anchors=[900])
         assert _tr2["points"] == [], _tr2
+        # "top" 앵커 = DPS 문턱 없는 스냅샷 최저가(TOP100 진입 가격): s1 900, s2 는 400DPS 1div=300(Magic 은 제외)
+        _trt = build_trend(anchors=["top"])
+        assert [p["floors"]["top"] for p in _trt["points"]] == [900, 300], _trt
+        assert TREND_ANCHORS == ["top"], TREND_ANCHORS    # 기본 앵커는 한 선 — 위젯이 라벨로 그린다
         # 오염 방어: rate 없는 통화(annul) 매물은 price*0=0 가짜 최저가를 만들면 안 된다.
         # 그 스냅샷은 통째로 제외돼야 한다(가드 제거 시 floor 0 인 3번째 점이 생겨 두 단언 다 실패).
         with db() as _c:
