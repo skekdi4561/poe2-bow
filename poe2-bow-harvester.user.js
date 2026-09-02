@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         POE2 활 시세 채집기
 // @namespace    poe2-bow-appraiser
-// @version      0.2.0
+// @version      0.2.1
 // @description  거래소에서 이미 보고 있는 활 매물을 주워 '활 시세 감정소'로 흘려보낸다. 추가 요청 0.
 // @match        https://poe.kakaogames.com/trade2/*
 // @match        http://localhost:8731/*
@@ -122,6 +122,14 @@
     var emit = function (obj) {
       try { window.dispatchEvent(new CustomEvent('__poe2bow', { detail: JSON.stringify(obj) })); } catch (e) {}
     };
+    // ⚠️ 이 함수는 문자열로 페이지 세계에 주입된다 — 바깥(샌드박스) 변수를 참조하면 ReferenceError 로
+    // 거래소의 모든 fetch/XHR 이 죽는다(0.2.0 실사고). 리그는 여기서 잡아 emit 에 실어 넘긴다.
+    var curLeague = '';
+    var leagueOf = function (url) {
+      var m = /\/api\/trade2\/search\/poe2\/([^/?#]+)/.exec(String(url || ''));
+      if (m) { try { curLeague = decodeURIComponent(m[1]); } catch (e) { curLeague = m[1]; } }
+      return curLeague;
+    };
     var catOf = function (bodyText) {
       try { return JSON.parse(bodyText).query.filters.type_filters.filters.category.option || ''; }
       catch (e) { return ''; }
@@ -130,7 +138,7 @@
       if (catOf(bodyText) === 'weapon.bow' && json && json.result) emit({ kind: 'search', ids: json.result });
     };
     var onFetch = function (json) {
-      if (json && json.result) emit({ kind: 'fetch', data: json });
+      if (json && json.result) emit({ kind: 'fetch', data: json, league: curLeague });
     };
     var F = window.fetch;
     window.fetch = function (input, init) {
@@ -186,6 +194,7 @@
         if (ks.length > MAX_IDS) ks.slice(0, ks.length - MAX_IDS).forEach(function (k) { delete bowIds[k]; });
       } else if (msg.kind === 'fetch') {
         var out = [];
+        if (typeof msg.league === 'string') curLeague = msg.league;   // 페이지 세계가 잡은 리그
         ((msg.data && msg.data.result) || []).forEach(function (res) {
           var r = normalizeRow(res, bowIds);
           if (r) out.push(r);
@@ -295,6 +304,31 @@
     assert(clean('[Physical|물리] 피해') === '물리 피해' && clean(null) === '', 'clean');
     assert(num('6.50%') === 6.5 && num(null) === 0, 'num');
     assert(HOOK.indexOf('__poe2bowHooked') > 0 && HOOK.indexOf('weapon.bow') > 0, 'HOOK 문자열');
-    console.log('harvester self-test PASS');
+    // HOOK 은 문자열로 페이지 세계에 주입된다 — 샌드박스 변수를 참조하면 거래소 전체가 죽는다(0.2.0 실사고).
+    // 페이지 세계를 흉내 낸 빈 컨텍스트에서 실제로 평가해 fetch/XHR 이 던지지 않는지, 리그가 emit 에 실리는지 본다.
+    var vm = require('vm');
+    var emitted = [];
+    var page = {
+      window: { fetch: function () { return Promise.resolve({ clone: function () { return this; }, json: function () { return Promise.resolve({ result: [{ id: 'z' }] }); } }); },
+                dispatchEvent: function (ev) { emitted.push(JSON.parse(ev.detail)); } },
+      document: { documentElement: { setAttribute: function () {} } },
+      CustomEvent: function (name, init) { this.type = name; this.detail = init && init.detail; },
+      XMLHttpRequest: function () {}, JSON: JSON, Promise: Promise, String: String,
+    };
+    page.XMLHttpRequest.prototype = { open: function () {}, send: function () {}, addEventListener: function () {} };
+    vm.runInNewContext(HOOK, page);
+    var threw = null;
+    try {
+      page.window.fetch('https://poe.kakaogames.com/api/trade2/search/poe2/Runes%20of%20Aldur/abc', { method: 'POST', body: '{}' });
+      page.window.fetch('https://poe.kakaogames.com/api/trade2/fetch/a,b?query=abc');
+      page.window.fetch('https://poe.kakaogames.com/unrelated');
+      var x = new page.XMLHttpRequest(); x.open('GET', 'https://poe.kakaogames.com/api/trade2/fetch/c?query=abc'); x.send();
+    } catch (err) { threw = err; }
+    assert(threw === null, '페이지 세계에서 훅이 던지면 안 된다: ' + threw);
+    setTimeout(function () {
+      var f = emitted.filter(function (m) { return m.kind === 'fetch'; });
+      assert(f.length >= 1 && f[0].league === 'Runes of Aldur', '훅이 잡은 리그가 fetch emit 에 실린다: ' + JSON.stringify(f));
+      console.log('harvester self-test PASS');
+    }, 20);
   }
 })();

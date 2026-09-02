@@ -8,8 +8,9 @@ database_name = "poe2-bow-harvest"
 # database_id 는 `npx wrangler d1 create poe2-bow-harvest` 실행 후 채운다
 database_id = "5a75a6c9-1a32-4a08-a1fc-b668fd281fd9"
 
-# IP 별 POST /harvest 속도 제한 — 정상 클라이언트는 5초 디바운스·30행 배치라 분당 몇 회면 충분하다
+# IP 별 POST /harvest 속도 제한 — 정상 클라이언트는 5초 디바운스·30행 배치라 분당 몇 회면 충분하다.
+# ⚠️ 이 바인딩은 위치·기계 단위 카운터라 단일 연결에서만 실효(실측) — 정확한 IP 차단은 대시보드 WAF 규칙
 [[ratelimits]]
 name = "RL"
 namespace_id = "1001"
-simple = { limit = 30, period = 60 }
+simple = { limit = 60, period = 60 }   # NAT 공유 IP(PC방) 감안 — 클라이언트 1명은 최대 12회/분

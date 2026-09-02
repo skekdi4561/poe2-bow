@@ -634,7 +634,7 @@ COUNTED_KR = [re.compile(p) for p in
               (r"^물리 피해 [\d.]+% 증가", r"^(?:\S+ )?피해 \d+~\d+ 추가",
                # 로컬 공격 속도는 감소도 DPS(aps)에 이미 반영된다 — 증가만 잡으면 비대칭
                r"^공격 속도 [\d.]+% (증가|감소)", r"reduced Attack Speed",
-               r"increased Physical Damage", r"Adds \d", r"increased Attack Speed")]
+               r"increased Physical Damage", r"^Adds \d", r"increased Attack Speed")]
 
 
 def is_off_dps(m):
@@ -1154,7 +1154,8 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, 
             continue
         rt = _ex_rate(rates, r.get("cur"))
         if rt > 0:
-            trusted.append(dict(d=(r.get("pdps") or 0) + (r.get("edps") or 0), p=r["price"] * rt))
+            trusted.append(dict(d=(r.get("pdps") or 0) + (r.get("edps") or 0), p=r["price"] * rt,
+                                cur=r.get("cur")))
 
     def num(v, default=0.0):
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
@@ -1203,7 +1204,7 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, 
         if fp(row) in fps:
             continue                     # 재등록(새 id, 같은 롤) — 지문으로 잡는다
         gate = crowd_gate(row["pdps"] + row["edps"],
-                          row["price"] * _ex_rate(rates, row["cur"]), trusted)
+                          row["price"] * _ex_rate(rates, row["cur"]), trusted, cur=row["cur"])
         if gate == "drop":
             suspicious += 1
             continue
@@ -1276,21 +1277,23 @@ def _ex_rate(rates, cur):
     return float(DEFAULT_RATES.get(cur, 0.0))
 
 
-def crowd_gate(d, p_ex, trusted, ratio=10.0):
+def crowd_gate(d, p_ex, trusted, ratio=10.0, cur=None):
     """크라우드 행 하나를 신뢰 관측(내 수집기, 엑잘 환산)과 견줘 "accept" / "drop" / "verify".
 
     - accept: DPS 가 같거나 높으면서 값이 같거나 싼 신뢰 관측이 있다 — 최전선을 못 바꾸니
       날조여도 해가 없다. 검증 예산을 안 쓴다.
-    - drop: DPS 근방(+15% 안)의 신뢰 최저가보다 ratio 배 이상 싸다 — 명백한 날조("700 DPS 1엑잘").
-      근방이 아니라 전체를 기준으로 삼으면 TOP100 최저가(1500 DPS 15 div)가 800 DPS 1 div 정상
-      행을 날조로 몰아, 크라우드가 채워야 할 중·하위를 통째로 버린다(실측).
+    - drop: DPS 근방(+15% 안)·**같은 화폐**의 신뢰 최저가보다 ratio 배 이상 싸다 — 명백한 날조
+      ("700 DPS 1엑잘"). 근방이 아니라 전체를 기준으로 삼으면 TOP100 최저가(1500 DPS 15 div)가
+      800 DPS 1 div 정상 행을 날조로 몰아 크라우드가 채워야 할 중·하위를 통째로 버리고(실측),
+      화폐를 안 가리면 미러 대역(최상위 DPS 는 전부 1 mirror ≈ 2M ex)에서 정당한 수백 div 행이
+      "1/10 미만"으로 폐기된다(마무리 검토 실측). 같은 화폐 기준점이 없으면 판정을 미루고 verify 로.
     - verify: 최전선을 바꾸는 행 — 진위 확인 후에만 올린다. 신뢰 최고 DPS 를 넘는 행과 기준점
       없는 대역의 행이 전부 여기다(예전엔 "판단 불가 = 통과"라 검증 없이 들어갔다).
     """
     above = [x for x in trusted if x["d"] >= d]
     if any(x["p"] <= p_ex for x in above):
         return "accept"
-    near = [x for x in above if x["d"] <= d * 1.15]
+    near = [x for x in above if x["d"] <= d * 1.15 and (cur is None or x.get("cur") == cur)]
     if near and p_ex < min(x["p"] for x in near) / ratio:
         return "drop"
     return "verify"
@@ -2008,6 +2011,7 @@ def demo():
             latest = json.load(fh)
         assert latest["bows"][0]["name"] == "활A" and latest["total"] == 137
         assert latest["rates"]["divine"]["rate"] == 300.0      # 환율도 같이 실린다
+        assert latest["league"] == "Runes of Aldur", latest.get("league")   # 채집 행 리그 대조용
         assert _order[:2] == ["rates", "items"], _order       # 환율이 아이템보다 먼저 잡힌다
         # TOP100 만 수집한다 — 조건 곡선을 위한 추가 검색은 더 이상 없다.
         # (옵션별 프리미엄은 이 매물들의 mods 로 화면에서 로컬 계산한다)
@@ -2598,6 +2602,20 @@ def demo():
     _mid = [{"id": "L", "name": "중위활", "pdps": 50, "edps": 0, "aps": 1, "crit": 1,
              "price": 0.1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
     assert "중위활" in [r["name"] for r in merge_harvest(list(_base), rows=_mid, verifier=_yes)]
+    # 미러 대역: 신뢰 최상위가 전부 1 mirror(≈2M ex)면 근방 최저가의 1/10 도 20만 ex 라, 정당한 300 div 행이
+    # 날조로 폐기됐다 — 10배 판정은 같은 화폐 기준점에서만, 없으면 진위 확인으로
+    _mirror_top = [{"id": "T1", "name": "미러탑", "pdps": 1500, "edps": 0, "aps": 1, "crit": 1,
+                    "price": 1, "cur": "mirror", "rarity": "Rare", "mods": [], "cond": None, "t": _now},
+                   {"id": "T2", "name": "디바인탑", "pdps": 1300, "edps": 0, "aps": 1, "crit": 1,
+                    "price": 100, "cur": "divine", "rarity": "Rare", "mods": [], "cond": None, "t": _now}]
+    _band = [{"id": "B1", "name": "대역활", "pdps": 1450, "edps": 0, "aps": 1, "crit": 1,
+              "price": 300, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    _callsB = []
+    assert "대역활" in [r["name"] for r in merge_harvest(
+        list(_mirror_top), rows=_band, verifier=lambda r: (_callsB.append(r["id"]), True)[1])]
+    assert _callsB == ["B1"], _callsB                 # 폐기가 아니라 진위 확인으로 갔다
+    assert crowd_gate(1450, 300 * 300.0, [dict(d=1500, p=2e6, cur="mirror")], cur="divine") == "verify"
+    assert crowd_gate(1450, 1.0, [dict(d=1500, p=2e6, cur="mirror")], cur="mirror") == "drop"   # 같은 화폐면 10배 판정
     # 진위 검증: 최전선을 잠식하는(신뢰점보다 싼) 행만 verifier 를 부른다
     _calls = []
     _cheap = [{"id": "V", "name": "잠식활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
@@ -2641,6 +2659,18 @@ def demo():
         _HARVEST_VERDICTS.clear()
         _v3 = make_harvest_verifier("b", "/l", {}, budget=8)
         assert _v3({"id": "EXISTS", "pdps": 100, "edps": 0, "price": 99, "cur": "divine"}) is False
+        # 일시 실패(TradeError)는 캐시하지 않는다 — 다음 사이클에 다시 본다
+        _HARVEST_VERDICTS.clear()
+        def _boom(base, lp, q, lo): raise TradeError("429")
+        globals()["search_min_dps"] = _boom
+        _v4 = make_harvest_verifier("b", "/l", {}, budget=8)
+        assert _v4({"id": "TMP", "pdps": 100, "edps": 0, "price": 1, "cur": "divine"}) is False
+        assert not any(k[0] == "TMP" for k in _HARVEST_VERDICTS), _HARVEST_VERDICTS
+        globals()["search_min_dps"] = _fs
+        # 같은 id 라도 가격이 바뀐 재관측은 다시 확인한다
+        _before2 = _net["search"]
+        _v4({"id": "r0", "pdps": 100, "edps": 0, "price": 2, "cur": "divine"})
+        assert _net["search"] == _before2 + 1
     finally:
         globals()["throttle"], globals()["search_min_dps"], globals()["fetch_ids"] = _keep
         _HARVEST_VERDICTS.clear()

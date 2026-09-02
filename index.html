@@ -418,6 +418,7 @@ let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 �
 // 기본 표본에 아예 안 들어온다 — 로컬 필터로는 이 값을 만들 수 없다.
 let snapConds = [];      // [{id, label, min, why}]
 let snapLeague = '';     // 스냅샷의 리그 — 채집 행은 이 리그와 같아야 섞는다(스탠다드 오염 방지)
+let snapReady = false;   // 활 스냅샷 응답을 한 번 받았는가(실패 포함) — 그 전의 채집 이벤트는 리그를 몰라 미룬다
 const normLeague = v => { try { return decodeURIComponent(String(v || '')).trim().toLowerCase(); } catch (e) { return ''; } };
 let pickedConds = new Set();   // 겹쳐 고른 조건 라벨들 (비어 있으면 조건 없음)
 let budgetDesc = true;         // 예산표 정렬 — DPS 높은 순이 기본
@@ -675,6 +676,8 @@ const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'price', 'pmin', 'pmax', 'emi
 // 저장은 활 뷰에서만 — 다른 무기를 보는 중 save() 가 돌면 그 무기 스냅샷이 활 저장분을 덮어
 // 수동·채집 매물이 영구 소실된다(감사에서 재현). 호출부 셋을 여기 한 곳에서 막는다.
 function save(){ if (curWeapon !== '') return; try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
+// 등록·삭제·불러오기는 활 뷰에서만 — 다른 무기 뷰에서는 저장이 안 되는데 화면만 바뀌면 '저장된 척' 사라진다
+const bowOnly = () => { if (curWeapon === '') return true; status('등록·삭제·불러오기는 활을 선택했을 때만 저장됩니다 — 무기를 활로 바꾸세요'); return false; };
 
 let reqs = {};                              // { 옵션 열쇠: 최소 문턱값 }
 
@@ -715,9 +718,9 @@ function mergeHarvest(list, rows){
   });
   return kept.concat([...hvById.values()].map(r => Object.assign({}, r, { hv: true })));
 }
-function loadHarvest(){
+function loadHarvest(src){                      // src: 테스트 주입용(없으면 localStorage)
   const cut = Date.now() - ROW_TTL;
-  const rows = harvestRows(readStore('poe2harvest', null, isPlainObject))
+  const rows = harvestRows(src !== undefined ? src : readStore('poe2harvest', null, isPlainObject))
     .filter(r => typeof r.t === 'number' && r.t >= cut)
     // 리그가 다르면 다른 시장이다 — 스냅샷 리그를 알면 같은 리그 행만(리그 없는 옛 채집 행도 제외)
     .filter(r => !snapLeague || normLeague(r.league) === normLeague(snapLeague));
@@ -726,7 +729,8 @@ function loadHarvest(){
   return rows.length;
 }
 window.addEventListener('poe2harvest-updated', () => {
-  if (curWeapon === '' && loadHarvest()) { save(); refresh(); }   // 활 뷰가 아니면 활 채집분을 섞지 않는다
+  // 활 뷰가 아니면 섞지 않고, 스냅샷 응답 전이면 미룬다(리그를 모르면 필터가 전부 통과시킨다 — selectWeapon 이 응답 뒤 합친다)
+  if (curWeapon === '' && snapReady && loadHarvest()) { save(); refresh(); }
 });
 const dayStr = t => { const d = new Date(t); return `${d.getMonth() + 1}월 ${d.getDate()}일`; };
 const agoStr = t => {
@@ -1191,6 +1195,7 @@ $('freshness').addEventListener('click', e => {
   const cut = Math.max(...ts) - DAY;                 // 가장 최근 묶음에서 하루 안쪽만 남긴다
   const drop = bows.length - bows.filter(b => b.t >= cut).length;
   if (!confirm(`${drop}개를 지웁니다. 되돌릴 수 없습니다.`)) return;
+  if (!bowOnly()) return;
   bows = bows.filter(b => b.t >= cut);
   save(); refresh();
 });
@@ -1313,6 +1318,7 @@ function clearForm(){
     .forEach(i => { $(i).value = ''; });
 }
 $('add').addEventListener('click', () => {
+  if (!bowOnly()) return;
   const n = id => +$(id).value || 0;
   const b = { name: $('f-name').value.trim(), aps: n('f-aps'), crit: n('f-crit'),
               pmin: n('f-pmin'), pmax: n('f-pmax'), emin: n('f-emin'), emax: n('f-emax'),
@@ -1324,6 +1330,7 @@ $('add').addEventListener('click', () => {
 $('clearform').addEventListener('click', clearForm);
 $('rows').addEventListener('click', e => {
   const btn = e.target.closest('.del'); if (!btn) return;
+  if (!bowOnly()) return;
   // refresh() 가 표를 다시 그리면 누른 버튼이 사라진다. 키보드로 여러 개를 지울 때
   // 포커스가 매번 body 로 떨어지면 처음부터 Tab 해서 돌아와야 한다 — 옆자리로 옮겨준다.
   const hadFocus = document.activeElement === btn;
@@ -1370,6 +1377,7 @@ fetch('/api/ping')
   });
 
 $('trade-go').addEventListener('click', async () => {
+  if (!bowOnly()) return;
   const url = $('trade-url').value.trim();
   if (!url) { status('거래소 검색 링크를 넣어주세요.'); return; }
   const limit = Math.max(1, Math.min(100, +$('trade-limit').value || 20));
@@ -1578,6 +1586,23 @@ $('trade-go').addEventListener('click', async () => {
     if (harvestRows({ rows: [{ id: 'a' }, { id: 'b' }] }).length !== 2) throw new Error('harvestRows 정상');
     if (harvestRows({ rows: [{ id: 'a', pdps: '227' }, { id: 'b', aps: NaN }] }).length) throw new Error('harvestRows 숫자 아닌 값');
     if (fmt(undefined, 2) !== '—' || fmt(NaN) !== '—') throw new Error('fmt 는 값이 없어도 던지지 않는다');
+    // 채집 행 리그 대조: 스냅샷 리그를 알면 같은 리그(퍼센트 인코딩 무관)만, 리그 없는 옛 행은 제외
+    { const kB = bows, kL = snapLeague, tN = Date.now();
+      const hv = { rows: [
+        { id: 'h1', t: tN, league: 'Standard', pdps: 100, edps: 0, aps: 1, crit: 1, price: 1, cur: 'divine', mods: [] },
+        { id: 'h2', t: tN, league: 'Runes%20of%20Aldur', pdps: 100, edps: 0, aps: 1, crit: 1, price: 1, cur: 'divine', mods: [] },
+        { id: 'h3', t: tN, pdps: 100, edps: 0, aps: 1, crit: 1, price: 1, cur: 'divine', mods: [] } ] };
+      bows = []; snapLeague = 'Runes of Aldur';
+      if (loadHarvest(hv) !== 1 || bows.length !== 1 || bows[0].id !== 'h2') throw new Error('채집 리그 필터');
+      bows = []; snapLeague = '';
+      if (loadHarvest(hv) !== 3) throw new Error('스냅샷 리그를 모르면 전부 통과(하위 호환)');
+      bows = kB; snapLeague = kL; }
+    // 비-활 뷰에서는 저장하지 않는다(node 샌드박스에서만 — 브라우저의 실제 저장소는 건드리지 않는다)
+    if (localStorage._s) { const kW = curWeapon, kB2 = bows;
+      curWeapon = 'spear'; bows = [{ name: 'x' }]; delete localStorage._s.poe2bows; save();
+      if ('poe2bows' in localStorage._s) throw new Error('비-활 뷰 save() 가 저장했다');
+      if (bowOnly() !== false) throw new Error('bowOnly 는 비-활 뷰에서 false');
+      curWeapon = kW; bows = kB2; }
     // mods 가 문자열이면 글자 단위로 쪼개져 조건 목록을 오염시킨다 — 배열이 아니면 비워야 한다
     const hv1 = harvestRows({ rows: [{ id: 'a', mods: '가나다라마' }] })[0];
     if (hv1.mods.length !== 0) throw new Error('harvestRows mods 문자열 방치');
@@ -1676,6 +1701,7 @@ async function selectWeapon(suffix){
     bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
     refresh();
     await loadSnapshot('latest.json', true);
+    snapReady = true;                                   // 실패했어도 '응답은 받았다' — 이제 채집 이벤트를 받는다
     if (curWeapon !== '') return;                       // 기다리는 사이 다른 무기로 바뀜
     const n = loadHarvest();
     if (n) { save(); refresh(); status(`거래소에서 직접 주운 매물 ${n}개를 합쳐 보는 중 (채집기)`); }
