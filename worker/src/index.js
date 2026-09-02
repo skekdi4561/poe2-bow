@@ -90,12 +90,20 @@ export default {
       } catch {
         return json({ error: "bad json" }, 400);
       }
+      // 익명 POST 라 플러딩(쓰기 한도 소진·/recent 창 밀어내기)은 코드로 못 막는다 — IP 별 속도 제한
+      if (env.RL) {
+        const { success } = await env.RL.limit({ key: req.headers.get("cf-connecting-ip") || "" });
+        if (!success) return json({ error: "rate limited" }, 429);
+      }
       const rows = (Array.isArray(body?.rows) ? body.rows : [])
         .slice(0, 60)
         .map(validRow)
         .filter(Boolean);
       const now = Date.now();
-      // 쓰기 절약 + 쓰기 소진 공격 완화: 이미 저장된 매물 id 는 쓰기 전에 걸러낸다.
+      // 쓰기 절약: 이미 저장된 매물 id 는 쓰기 전에 걸러낸다(정직한 재전송만 접힌다 — 소진 공격은 위 속도 제한이 맡는다).
+      // fee 없는 행은 lid 를 따로 둔다 — 같은 id 로 fee 없는 행이 먼저 오면 INSERT OR IGNORE 가
+      // 48시간 동안 정당한 fee 행을 막았다(공개된 실제 매물 id 로 선점 가능).
+      const lidOf = (r) => (r.fee == null ? "nofee:" + r.id : r.id);
       // (읽기는 하루 500만 행 무료라 사실상 공짜, 쓰기는 10만 행 한도가 병목)
       let fresh = rows;
       if (rows.length) {
@@ -103,17 +111,17 @@ export default {
         const { results } = await env.DB.prepare(
           "SELECT lid FROM harvest WHERE lid IN (" + marks + ")",
         )
-          .bind(...rows.map((r) => r.id))
+          .bind(...rows.map(lidOf))
           .all();
         const known = new Set(results.map((r) => r.lid));
-        fresh = rows.filter((r) => !known.has(r.id));
+        fresh = rows.filter((r) => !known.has(lidOf(r)));
       }
       const stmt = env.DB.prepare(
         "INSERT OR IGNORE INTO harvest(lid, t, fee, row) VALUES (?1, ?2, ?3, ?4)",
       );
       if (fresh.length) {
         await env.DB.batch(
-          fresh.map((r) => stmt.bind(r.id, now, r.fee, JSON.stringify(r))),
+          fresh.map((r) => stmt.bind(lidOf(r), now, r.fee, JSON.stringify(r))),
         );
       }
       // ponytail: 요청 2% 확률로 이틀 지난 행 청소 — 전용 cron 은 필요해지면
@@ -122,13 +130,13 @@ export default {
           .bind(now - 48 * 3600 * 1000)
           .run();
       }
-      return json({ ok: true, accepted: rows.length, written: fresh.length });
+      return json({ ok: true, accepted: rows.length, written: fresh.length});
     }
 
     if (req.method === "GET" && url.pathname === "/recent") {
       const cut = Date.now() - 24 * 3600 * 1000;
       const { results } = await env.DB.prepare(
-        "SELECT t, fee, row FROM harvest WHERE t >= ?1 ORDER BY t DESC LIMIT 3000",
+        "SELECT t, fee, row FROM harvest WHERE t >= ?1 AND fee IS NOT NULL ORDER BY t DESC LIMIT 3000",   // fee 없는 행은 수집기가 버리므로 창(3000)을 낭비하지 않는다
       )
         .bind(cut)
         .all();

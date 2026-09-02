@@ -417,6 +417,8 @@ let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 �
 // 검색이 id 를 100개까지만 주는데 그게 가격 오름차순이라, 비싼 옵션이 붙은 활은
 // 기본 표본에 아예 안 들어온다 — 로컬 필터로는 이 값을 만들 수 없다.
 let snapConds = [];      // [{id, label, min, why}]
+let snapLeague = '';     // 스냅샷의 리그 — 채집 행은 이 리그와 같아야 섞는다(스탠다드 오염 방지)
+const normLeague = v => { try { return decodeURIComponent(String(v || '')).trim().toLowerCase(); } catch (e) { return ''; } };
 let pickedConds = new Set();   // 겹쳐 고른 조건 라벨들 (비어 있으면 조건 없음)
 let budgetDesc = true;         // 예산표 정렬 — DPS 높은 순이 기본
 let dataRev = 0;               // 데이터 판 번호 — 예산표 곡선 캐시 무효화용
@@ -441,7 +443,7 @@ rates = readStore('poe2rates', {}, isPlainObject);
 // 뜬다(브라우저에서 재현). 수집기 쪽도 막았지만 옛 스냅샷이 남아 있을 수 있어 여기서도 건다.
 const okRate = v => typeof v === 'number' && isFinite(v) && v >= 1;
 function rateOf(cur){
-  if (cur in rates) return rates[cur];                  // 손으로 넣은 값이 이긴다
+  if (cur in rates && okRate(rates[cur])) return rates[cur];   // 손으로 넣은 값이 이긴다(모양이 맞을 때만)
   const s = snapRates[cur];
   if (s && okRate(s.rate)) return s.rate;               // 그다음이 실제 거래소 시세
   return cur in RATE_DEFAULT ? RATE_DEFAULT[cur] : 0;   // 모르는 화폐는 0 → 환산 불가
@@ -472,7 +474,7 @@ function pickUnit(minEx){
   // 큰 단위부터 훑되, "제일 싼 매물이 0.1 밑으로 내려가지 않는" 선에서 멈춘다.
   // 최댓값 기준으로 고르면 1 ex 짜리가 0.0033 div 가 되어 값이 통째로 사라진다 —
   // 큰 숫자가 불편한 것보다 작은 값이 0 으로 뭉개지는 쪽이 훨씬 나쁘다.
-  for (const c of ['divine', 'annul', 'chaos', 'exalted']) {
+  for (const c of ['divine', 'exalted']) {   // money() 와 같은 두 단위만 — 축은 annul 인데 표는 ex 면 같은 값이 둘로 보인다
     const r = rateOf(c);
     // 환율이 1 이하로 잡힌 화폐(표본이 얇아 엑잘과 같아진 경우)는 단위로 쓸 이유가 없다
     if (r > 1 && minEx / r >= 0.1) return c;
@@ -561,7 +563,7 @@ function priceAt(front, d){
 // `피해.*추가` 도 "피해의 #%를 추가 카오스 피해로 획득"을 잘못 잡으므로 범위 표기를 요구한다.
 const COUNTED = [
   /increased Physical Damage|^물리 피해 [\d.]+% 증가/i,
-  /Adds \d|피해 \d+~\d+ 추가/i,
+  /^Adds \d|^(?:\S+ )?피해 \d+~\d+ 추가/i,   // 접두 조건('감전된 적에게 …')이 붙은 추가 피해는 거래소 DPS 밖
   /increased Attack Speed|reduced Attack Speed|^공격 속도 [\d.]+% (증가|감소)/i,
 ];
 // 반드시 마크업을 벗긴 뒤 판별한다 — "[Physical|물리] 피해"는 "물리 피해"와 글자가 안 붙어 있다
@@ -597,10 +599,10 @@ const condKey = c => c.key || modKey(String(c.label).replace(/\s*이상\s*$/, ''
 function condPredicates(labels){
   return labels.map(l => {
     const c = snapConds.find(x => x.label === l);
-    return c ? { key: condKey(c), min: c.min } : { key: l, min: 0.0001 };
+    return c ? { key: condKey(c), min: c.min } : { key: l, min: 0 };   // 로컬 조건은 '존재'만 본다
   });
 }
-const meetsAll = (offs, preds) => preds.every(p => ((offs || {})[p.key] || 0) >= p.min);
+const meetsAll = (offs, preds) => preds.every(p => p.key in (offs || {}) && ((offs || {})[p.key] || 0) >= p.min);   // 값 없는 옵션은 열쇠 존재로 판정
 // 옛 수집본의 빈도 조건 라벨은 "#% 증가" 처럼 빈칸이다 — 표시할 때 문턱값으로 채운다.
 // 라벨 원본은 v.cond 매칭의 열쇠라 건드리지 않고, 보여주는 글자만 바꾼다.
 const condText = c => String(c.label).includes('#') ? String(c.label).replace('#', c.min) + ' 이상' : c.label;
@@ -664,8 +666,15 @@ function parseItem(text){
 /* ---------- 상태 ---------- */
 const $ = id => document.getElementById(id);
 let bows = [];
-bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object');
-function save(){ try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
+bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
+let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가 먼저 참조하므로 여기서 선언
+// 있는 값은 숫자여야 한다 — 문자열 pdps 는 pdps+edps 가 문자열 연결이 되어 DPS 가 폭증한다. 없는 값은 허용
+// (수동 등록 행은 pdps 대신 pmin/pmax 를 갖는다). 없는 값의 표시는 fmt 가 던지지 않게 맡는다.
+const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'price', 'pmin', 'pmax', 'emin', 'emax']
+  .every(k => r[k] === undefined || (typeof r[k] === 'number' && isFinite(r[k])));
+// 저장은 활 뷰에서만 — 다른 무기를 보는 중 save() 가 돌면 그 무기 스냅샷이 활 저장분을 덮어
+// 수동·채집 매물이 영구 소실된다(감사에서 재현). 호출부 셋을 여기 한 곳에서 막는다.
+function save(){ if (curWeapon !== '') return; try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
 
 let reqs = {};                              // { 옵션 열쇠: 최소 문턱값 }
 
@@ -684,7 +693,7 @@ const freshRows = d => stamped(Array.isArray(d && d.bows) ? d.bows.filter(b => b
 // mods 가 문자열이면 offMods 의 for...of 가 글자 단위로 쪼개 조건 목록을 오염시키므로
 // 배열이 아니면 비운다. id 는 문자열만, 시각은 숫자만 받는다.
 const harvestRows = d => (isPlainObject(d) && Array.isArray(d.rows))
-  ? d.rows.filter(r => r && typeof r === 'object' && typeof r.id === 'string' && r.id)
+  ? d.rows.filter(r => r && typeof r === 'object' && typeof r.id === 'string' && r.id && numOk(r))
       .map(r => Object.assign({}, r, { mods: Array.isArray(r.mods) ? r.mods.filter(m => typeof m === 'string') : [] }))
   : [];
 // 모든 매물은 수집 시각 기준 24시간이 지나면 통계에서 뺀다 — 호가는 금방 팔리거나 바뀐다.
@@ -709,13 +718,15 @@ function mergeHarvest(list, rows){
 function loadHarvest(){
   const cut = Date.now() - ROW_TTL;
   const rows = harvestRows(readStore('poe2harvest', null, isPlainObject))
-    .filter(r => typeof r.t === 'number' && r.t >= cut);
+    .filter(r => typeof r.t === 'number' && r.t >= cut)
+    // 리그가 다르면 다른 시장이다 — 스냅샷 리그를 알면 같은 리그 행만(리그 없는 옛 채집 행도 제외)
+    .filter(r => !snapLeague || normLeague(r.league) === normLeague(snapLeague));
   if (!rows.length) return 0;
   bows = mergeHarvest(bows, rows);
   return rows.length;
 }
 window.addEventListener('poe2harvest-updated', () => {
-  if (loadHarvest()) { save(); refresh(); }
+  if (curWeapon === '' && loadHarvest()) { save(); refresh(); }   // 활 뷰가 아니면 활 채집분을 섞지 않는다
 });
 const dayStr = t => { const d = new Date(t); return `${d.getMonth() + 1}월 ${d.getDate()}일`; };
 const agoStr = t => {
@@ -729,7 +740,8 @@ const timeStr = t => { const d = new Date(t);
   return `${dayStr(t)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 
 const RARITY_KO = { Normal: '일반', Magic: '마법', Rare: '희귀', Unique: '고유' };
-const fmt = (n, d = 1) => n.toLocaleString('ko-KR', { minimumFractionDigits: d, maximumFractionDigits: d });
+// 값이 없거나 숫자가 아니면 던지지 않고 '—' — 표 한 칸의 aps 하나가 비어도 render() 전체가 죽어 화면이 영구 고착됐다
+const fmt = (n, d = 1) => Number.isFinite(n) ? n.toLocaleString('ko-KR', { minimumFractionDigits: d, maximumFractionDigits: d }) : '—';
 // 한 목록 안에서는 단위를 하나로 통일해야 눈으로 비교가 된다 (제일 큰 값 기준)
 // 실측 폭이 0.016 ~ 1200 ex 로 워낙 넓어서 목록 단위로 자릿수를 맞추면
 // 작은 값이 전부 0.0 으로 뭉갠다 — 값마다 유효숫자를 맞춘다.
@@ -752,7 +764,7 @@ function buildRates(){
   $('rate-rows').innerHTML = seen.map(c => `
     <div><label for="rt-${esc(c)}">1 ${esc(c)} = ? ex <span class="src">${esc(rateNote(c))}</span></label>
       <input id="rt-${esc(c)}" class="num" inputmode="decimal"
-             data-cur="${esc(c)}" value="${rateOf(c)}"></div>`).join('')
+             data-cur="${esc(c)}" value="${esc(rateOf(c))}"></div>`).join('')
     || '<p class="hint">매물을 불러오면 화폐 목록이 여기 나옵니다.</p>';
 }
 
@@ -937,7 +949,7 @@ function partition(){
   let base = all.filter(v => ok(v) && isFresh(v.src, cut));
   let byStale = all.filter(v => ok(v) && !isFresh(v.src, cut)).length;
   let staleKept = false;
-  if (!base.length && byStale) {
+  if (base.length < 2 && byStale) {          // 위젯(appraiser.ts)과 같은 규칙 — 점 하나로는 곡선이 안 된다
     // 수집이 멈춰 전부 만료된 상태. 빈 화면은 고장으로 보인다 — 매물은 보여주되
     // freshness 가 "24시간이 지난 시세" 경고를 크게 띄운다.
     base = all.filter(ok);
@@ -966,8 +978,8 @@ function optionFronts(all){
   const cnt = new Map();
   for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
   for (const [k, n] of [...cnt.entries()]
+       .filter(([k, n]) => !measured.has(k) && n >= 3)   // localConds 와 같은 순서: 거른 뒤 12개(표본 1~2개는 곡선이 아니다)
        .sort((a, b) => byUsefulness(a[0], a[1], b[0], b[1])).slice(0, 12)) {
-    if (measured.has(k) || n < 3) continue;   // 표본 1~2개로는 곡선이라 부를 게 없다
     // 롤(수치) 구간으로 세분화 — 관측된 분포의 사분위에서 문턱을 뽑는다.
     // 게임 티어표 없이도 시장에 실제로 도는 굴림 구간이 그대로 계단이 된다.
     const vals = base.map(v => v.offs[k]).filter(x => x > 0).sort((a, b) => a - b);
@@ -1062,7 +1074,7 @@ function render(){
   let view;
   if (!sel.length) view = base;
   else if (selMeasuredOne) view = all.filter(v => v.cond === sel[0]);   // 검색으로 직접 잰 곡선
-  else if (sel.length === 1) view = base.filter(v => (v.offs[sel[0]] || 0) >= Math.max(localMin, 0.0001));
+  else if (sel.length === 1) view = base.filter(v => sel[0] in v.offs && (v.offs[sel[0]] || 0) >= localMin);
   else view = all.filter(v => meetsAll(v.offs, condPredicates(sel)));   // 겹친 조건 = 로컬 판정
   const active = sel.length > 0 || Object.keys(reqs).length > 0;
 
@@ -1208,7 +1220,9 @@ function premium(f, baseFront, active, thin){
   }
   if (!gaps.length) {
     el.className = 'premium none';
-    el.textContent = '조건에 맞는 활이 없습니다. 문턱값을 낮추거나 매물을 더 불러오세요.';
+    el.textContent = f.length
+      ? '조건 매물과 기준 매물의 DPS 구간이 겹치지 않아 프리미엄을 잴 수 없습니다.'
+      : '조건에 맞는 매물이 없습니다. 문턱값을 낮추거나 매물을 더 불러오세요.';
     return;
   }
   const mid = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
@@ -1245,7 +1259,7 @@ function chart(base, view, front, baseFront){
   // 로그축에선 지수 곡선이 직선이 되고 기울기가 곧 "DPS당 배율"이라 꺾이는 지점이 보인다.
   const logY = logYAxis;
   const y1 = Math.max(...ys) * 1.1 || 1;
-  const y0 = Math.max(Math.min(...ys) * 0.8, y1 * 1e-6) || 1;
+  const y0 = Math.min(...ys) * 0.8 || 1;   // ys 는 p>0 만이라 바닥 클램프가 필요 없다 — y1 비례 바닥은 미러 가격 때문에 1~17 ex 행 76개를 한 픽셀에 뭉갰다
   const lg = v => Math.log10(Math.max(v, y0));
   const Y = logY
     ? v => H - B - (lg(v) - lg(y0)) / ((lg(y1) - lg(y0)) || 1) * (H - T - B)
@@ -1329,8 +1343,11 @@ $('unit').addEventListener('change', e => {
 $('metric').addEventListener('change', render);
 $('rate-rows').addEventListener('input', e => {
   if (!e.target.dataset.cur) return;
-  rates[e.target.dataset.cur] = +e.target.value || 0;
+  const v = +e.target.value;
+  if (okRate(v)) rates[e.target.dataset.cur] = v;
+  else delete rates[e.target.dataset.cur];              // 빈 칸·0 은 수동값 해제 → 스냅샷/기본값으로 복귀
   try { localStorage.setItem('poe2rates', JSON.stringify(rates)); } catch (err) {}
+  dataRev++;                                            // 예산표 곡선 캐시도 새 환율로 다시 계산
   render();
 });
 $('rare-only').addEventListener('change', refresh);
@@ -1559,6 +1576,8 @@ $('trade-go').addEventListener('click', async () => {
     if (harvestRows(null).length || harvestRows({}).length || harvestRows({ rows: '헐' }).length
         || harvestRows({ rows: [null, 1, { name: 'id없음' }] }).length) throw new Error('harvestRows 잡값');
     if (harvestRows({ rows: [{ id: 'a' }, { id: 'b' }] }).length !== 2) throw new Error('harvestRows 정상');
+    if (harvestRows({ rows: [{ id: 'a', pdps: '227' }, { id: 'b', aps: NaN }] }).length) throw new Error('harvestRows 숫자 아닌 값');
+    if (fmt(undefined, 2) !== '—' || fmt(NaN) !== '—') throw new Error('fmt 는 값이 없어도 던지지 않는다');
     // mods 가 문자열이면 글자 단위로 쪼개져 조건 목록을 오염시킨다 — 배열이 아니면 비워야 한다
     const hv1 = harvestRows({ rows: [{ id: 'a', mods: '가나다라마' }] })[0];
     if (hv1.mods.length !== 0) throw new Error('harvestRows mods 문자열 방치');
@@ -1629,13 +1648,16 @@ const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
 // 한 시점에 통째로 뜬 스냅샷이라 시점이 섞일 수 없다. isBow 면 지난 스냅샷만 갈아끼우고
 // 수동·채집 행은 남긴다(+localStorage 저장). 다른 무기는 뷰 전용 — 활 저장분을 안 건드린다.
 async function loadSnapshot(file, isBow){
+  const want = curWeapon;
   try {
     const r = await fetch(file, { cache: 'no-store' });
     if (!r.ok) return false;
     const d = await r.json();
     if (!d.bows || !d.bows.length) return false;
+    if (want !== curWeapon) return true;                // 전환 중 늦게 온 응답 — 다른 무기 화면을 덮지 않는다
     snapRates = d.rates || {};                          // 수집기가 떠온 환율을 같이 받는다
     snapConds = d.conds || [];
+    snapLeague = typeof d.league === 'string' ? d.league : '';
     // 사라진 조건 라벨은 buildConds() 가 다시 그릴 때 선택에서 걷어낸다
     const fresh = d.bows.map(b => Object.assign({ snap: true, t: d.taken_at }, b));
     if (isBow) { bows = bows.filter(b => !b.snap).concat(fresh); save(); }
@@ -1646,20 +1668,21 @@ async function loadSnapshot(file, isBow){
   } catch (e) { return false; }                         // 스냅샷이 없으면 직접 불러오면 된다
 }
 
-let curWeapon = '';
 async function selectWeapon(suffix){
   curWeapon = suffix;
   const w = WEAPONS.find(x => x.suffix === suffix) || WEAPONS[0];
   $('weapon-name').textContent = w.label;
   if (suffix === '') {                                  // 활: 저장분 복원 + 스냅샷 + 채집기
-    bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object');
+    bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
     refresh();
     await loadSnapshot('latest.json', true);
+    if (curWeapon !== '') return;                       // 기다리는 사이 다른 무기로 바뀜
     const n = loadHarvest();
     if (n) { save(); refresh(); status(`거래소에서 직접 주운 매물 ${n}개를 합쳐 보는 중 (채집기)`); }
     return;
   }
   const ok = await loadSnapshot(weaponFile(suffix), false);
+  if (curWeapon !== suffix) return;
   if (!ok) { bows = []; refresh(); status(`${w.label} 시세는 아직 수집되지 않았습니다 — 곧 채워집니다.`); }
 }
 

@@ -631,7 +631,7 @@ def mod_val(m):
 # "피해의 #%를 추가 카오스 피해로 획득"을 잘못 잡아서, 실제 "화염 피해 10~16 추가" 형태만
 # 잡도록 범위 표기를 요구한다.
 COUNTED_KR = [re.compile(p) for p in
-              (r"^물리 피해 [\d.]+% 증가", r"피해 \d+~\d+ 추가",
+              (r"^물리 피해 [\d.]+% 증가", r"^(?:\S+ )?피해 \d+~\d+ 추가",
                # 로컬 공격 속도는 감소도 DPS(aps)에 이미 반영된다 — 증가만 잡으면 비대칭
                r"^공격 속도 [\d.]+% (증가|감소)", r"reduced Attack Speed",
                r"increased Physical Damage", r"Adds \d", r"increased Attack Speed")]
@@ -794,7 +794,9 @@ def search_api_url(page_url):
         raise TradeError("거래소 주소가 아닙니다. 예: https://www.pathofexile.com/trade2/search/poe2/...")
     if "/trade2/search/" not in u.path:
         raise TradeError("저장된 '검색' 링크여야 합니다(주소에 /trade2/search/ 가 있어야 함).")
-    return ("%s://%s" % (u.scheme, u.hostname),
+    # 스킴은 입력을 따르지 않고 항상 https — http:// 링크를 그대로 따라가면 POESESSID 쿠키가
+    # 평문으로 나간다(실측: 다른 사이트의 페이지가 /api/trade?url=http://... 로 강제할 수 있다).
+    return ("https://%s" % u.hostname,
             u.path.replace("/trade2/search/", "/api/trade2/search/", 1))
 
 
@@ -970,8 +972,16 @@ SERVED = {"/", "/index.html", "/latest.json", "/favicon.ico", "/favicon.png", "/
 WEAPON_LATEST = {"/latest.%s.json" % s for _c, s, _n in ATTACK_WEAPONS if s}
 
 
-def served_path(path):
-    return path in SERVED or path in WEAPON_LATEST
+def served_path(request_path):
+    """원문 요청 경로(`?` 앞)가 화이트리스트와 **글자 그대로** 같을 때만 내보낸다.
+
+    urlparse().path 로 판정하면 마지막 세그먼트의 `;params` 가 떨어져 나가는데, 파일을 여는
+    translate_path 는 원문을 다시 풀어 쓴다 — `/index.html;%2f..%2fFIXLOG.md` 가 게이트를 통과한 뒤
+    다른 파일로 풀렸다(실측 200, 폴더 안 임의 파일 노출). 두 판정의 입력을 같게 만드는 대신
+    원문 자체를 화이트리스트와 대조하면 `;`·`%` 가 섞인 경로는 애초에 못 들어온다.
+    """
+    raw = request_path.split("?", 1)[0].split("#", 1)[0]
+    return raw in SERVED or raw in WEAPON_LATEST
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -1006,7 +1016,7 @@ class Handler(SimpleHTTPRequestHandler):
         # 공격자 Host 로도 200). 본문은 안 나가지만 파일 존재·크기가 새고 리바인딩 방어가 뚫린다.
         if not self.local_only():
             return
-        if not served_path(urlparse(self.path).path):
+        if not served_path(self.path):
             return self.send_json(404, {"error": "없는 경로입니다"})
         return super().do_HEAD()
 
@@ -1030,7 +1040,7 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:                       # 예상 못 한 응답 형태까지 화면에 보이게
                 return self.send_json(200, {"error": "%s: %s" % (type(e).__name__, e)})
             return self.send_json(200, {"bows": bows, "total": total, "skipped": skipped})
-        if not served_path(path):
+        if not served_path(self.path):           # 원문 경로로 판정 — served_path 주석 참고
             return self.send_json(404, {"error": "없는 경로입니다"})
         return super().do_GET()
 
@@ -1101,7 +1111,7 @@ def _norm_league(v):
     return urlunquote(str(v or "")).strip().lower()
 
 
-def merge_harvest(merged, rows=None, verifier=None, league=None, category=None):
+def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, rates=None):
     """크라우드 수집 행을 24시간 합집합에 합류시킨다.
 
     오버레이 앱(poe2-appraiser)은 사용자가 스스로 한 활 가격 검색의 응답을
@@ -1136,9 +1146,15 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None):
     # 매물은 바로 팔리므로(사용자 판단) 실제 꿀매물이 1/10 가격까지 갈 일은 없고,
     # "700 DPS 1엑잘" 류의 명백한 날조만 걸리게 느슨히 잡았다. 3배였다가 과도하다는
     # 사용자 피드백으로 완화(2026-08-24).
-    ex_rate = lambda r: r["price"] * 1  # merged 행 price 는 화폐 단위 그대로다
-    trusted = [dict(d=(r.get("pdps") or 0) + (r.get("edps") or 0), p=r["price"], cur=r["cur"])
-               for r in merged if r.get("src") != "user"]
+    # 신뢰 관측은 엑잘로 환산해 화폐와 무관하게 견준다 — TOP100 은 divine/mirror 가격뿐이라
+    # 화폐별 비교는 exalted/chaos/annul 크라우드 행에 기준점을 아예 못 줬다(실측, 전부 무검증 통과).
+    trusted = []
+    for r in merged:
+        if r.get("src") == "user":
+            continue
+        rt = _ex_rate(rates, r.get("cur"))
+        if rt > 0:
+            trusted.append(dict(d=(r.get("pdps") or 0) + (r.get("edps") or 0), p=r["price"] * rt))
 
     def num(v, default=0.0):
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
@@ -1176,7 +1192,7 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None):
                "price": num(r.get("price")), "cur": r.get("cur") or "",
                "rarity": r.get("rarity") or "", "mods": mods,
                "cond": None, "t": int(t), "src": "user"}
-        if row["price"] <= 0 or row["price"] > HMAX["price"] or row["cur"] not in TRADE_CURRENCIES:
+        if row["price"] <= 0 or row["price"] > HMAX["price"] or row["cur"] not in PRICE_CURRENCIES:
             continue
         if row["pdps"] > HMAX["dps"] or row["edps"] > HMAX["dps"] or row["pdps"] < 0 or row["edps"] < 0:
             continue                     # 상한 밖 = 조작 — 곡선 축을 지킨다
@@ -1186,16 +1202,18 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None):
             continue                     # 내 수집기가 이미 본 매물 — 중복
         if fp(row) in fps:
             continue                     # 재등록(새 id, 같은 롤) — 지문으로 잡는다
-        if is_undercut_suspicious(row, trusted):
+        gate = crowd_gate(row["pdps"] + row["edps"],
+                          row["price"] * _ex_rate(rates, row["cur"]), trusted)
+        if gate == "drop":
             suspicious += 1
             continue
-        # 최전선을 실제로 바꾸는(신뢰 관측보다 싼) 행만 거래소에 진위 확인한다.
-        # 실재하면 진짜 꿀매물이니 살리고, 없으면 날조거나 이미 팔린 것 — 어느 쪽이든
-        # 곡선에 남기면 유령 계단이 된다("싸면 즉시 팔린다"는 시장 원리의 코드화).
-        if verifier and is_undercut_suspicious(row, trusted, ratio=1.0):
-            if not verifier(row):
-                unverified += 1
-                continue
+        # 최전선을 실제로 바꾸는 행(신뢰 관측 어느 것에도 지배당하지 않는 행)은 거래소에 진위를
+        # 확인한 뒤에만 올린다. 실재하면 진짜 꿀매물이니 살리고, 없으면 날조거나 이미 팔린 것.
+        # 신뢰 최고 DPS 를 넘는 행도 여기 들어간다 — 예전엔 "비교 기준점 없음 = 통과"라서
+        # 99999 DPS·1 ex 위조 한 건이 검증 0회로 합류해 최전선을 점 하나로 무너뜨렸다(실측).
+        if gate == "verify" and (not verifier or not verifier(row)):
+            unverified += 1
+            continue
         seen.add((None, row["id"]))
         fps.add(fp(row))
         merged.append(row)
@@ -1225,8 +1243,9 @@ def make_harvest_verifier(base, league_path, query, budget=8):
         vid = row.get("id") or ""
         if not vid:
             return False
-        if vid in _HARVEST_VERDICTS:
-            return _HARVEST_VERDICTS[vid]
+        key = (vid, row.get("price"), row.get("cur"))   # 가격이 바뀐 재관측은 다시 본다
+        if key in _HARVEST_VERDICTS:
+            return _HARVEST_VERDICTS[key]
         if state["left"] <= 0:
             return False
         state["left"] -= 1
@@ -1240,26 +1259,41 @@ def make_harvest_verifier(base, league_path, query, budget=8):
                 ok = bool(fetched) and fetched[0]["price"] == row["price"]                     and fetched[0]["cur"] == row["cur"]
         except TradeError as e:
             print("     진위 확인 실패(%s): %s" % (vid[:12], e))
-        _HARVEST_VERDICTS[vid] = ok
+            return False                   # 일시 실패는 캐시하지 않는다 — 다음 사이클에 다시 본다
+        _HARVEST_VERDICTS[key] = ok
         return ok
 
     return verify
 
 
-def is_undercut_suspicious(row, trusted, ratio=10.0):
-    """크라우드 행이 신뢰 관측(내 수집기)의 같은 DPS 최전선보다 ratio 배 이상 싸면 의심.
+def _ex_rate(rates, cur):
+    """환율 스냅샷(best_rates 형태 {cur: {"rate": x}} 또는 {cur: x})에서 엑잘 환율. 모르면 기본값."""
+    r = (rates or {}).get(cur)
+    if isinstance(r, dict):
+        r = r.get("rate")
+    if isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
+        return float(r)
+    return float(DEFAULT_RATES.get(cur, 0.0))
 
-    비교는 엑잘 환산이 필요하지만 환율 스냅샷을 여기까지 끌고 오면 결합이 깊어진다 —
-    같은 화폐끼리만 비교해도 조작 방어엔 충분하다(조작자는 가장 싸 보이는 화폐를 쓰기
-    마련이고, 같은 화폐의 진짜 매물이 그 대역에 있으면 걸린다). 같은 화폐 기준점이
-    없으면 판단 불가로 통과시킨다 — 과잉 차단으로 진짜 표본을 버리는 쪽이 더 나쁘다.
+
+def crowd_gate(d, p_ex, trusted, ratio=10.0):
+    """크라우드 행 하나를 신뢰 관측(내 수집기, 엑잘 환산)과 견줘 "accept" / "drop" / "verify".
+
+    - accept: DPS 가 같거나 높으면서 값이 같거나 싼 신뢰 관측이 있다 — 최전선을 못 바꾸니
+      날조여도 해가 없다. 검증 예산을 안 쓴다.
+    - drop: DPS 근방(+15% 안)의 신뢰 최저가보다 ratio 배 이상 싸다 — 명백한 날조("700 DPS 1엑잘").
+      근방이 아니라 전체를 기준으로 삼으면 TOP100 최저가(1500 DPS 15 div)가 800 DPS 1 div 정상
+      행을 날조로 몰아, 크라우드가 채워야 할 중·하위를 통째로 버린다(실측).
+    - verify: 최전선을 바꾸는 행 — 진위 확인 후에만 올린다. 신뢰 최고 DPS 를 넘는 행과 기준점
+      없는 대역의 행이 전부 여기다(예전엔 "판단 불가 = 통과"라 검증 없이 들어갔다).
     """
-    d = row["pdps"] + row["edps"]
-    same_cur = [t for t in trusted if t["cur"] == row["cur"] and t["d"] >= d]
-    if not same_cur:
-        return False
-    floor = min(t["p"] for t in same_cur)
-    return row["price"] < floor / ratio
+    above = [x for x in trusted if x["d"] >= d]
+    if any(x["p"] <= p_ex for x in above):
+        return "accept"
+    near = [x for x in above if x["d"] <= d * 1.15]
+    if near and p_ex < min(x["p"] for x in near) / ratio:
+        return "drop"
+    return "verify"
 
 
 def write_latest(payload, path=None):
@@ -1441,7 +1475,7 @@ def guard_rates(measured, memory):
     return out
 
 
-def collect(url, limit=100):
+def collect(url):
     """한 시점의 시세를 통째로 뜬다. 스냅샷 하나 = 한 시점 = 시점이 섞일 수 없다."""
     taken = int(time.time() * 1000)
 
@@ -1478,12 +1512,18 @@ def collect(url, limit=100):
         recent_rows(),
         verifier=make_harvest_verifier(base, league_path0, q0),
         league=league,                       # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
-        category="weapon.bow")               # 활 곡선에는 활 매물만
+        category="weapon.bow",               # 활 곡선에는 활 매물만
+        rates=rates)                         # 신뢰 관측과 크라우드 행을 엑잘로 환산해 견준다
+    if not merged:
+        # 빈 결과로 파일을 덮지 않는다(collect_weapon 과 같은 가드). 이번 수집이 0개여도
+        # 24h 합집합이 있으면 그걸 싣고, 그것마저 비면 지난 파일을 보존한다.
+        print("     활 수집 0개 · 24시간 합집합 0개 — 파일을 갱신하지 않는다(지난 데이터 보존)")
+        return 0
     try:
         trend = build_trend()
     except Exception as e:                       # 추세는 부가정보 — 실패해도 수집은 나간다
         print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e)); trend = None
-    write_latest({"taken_at": taken, "total": total, "skipped": skipped,
+    write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
                   "rates": rates, "conds": conds, "bows": merged, "trend": trend})
     print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → latest.json"
           % (time.strftime("%H:%M:%S"), len(bows), len(merged), total, skipped))
@@ -1513,7 +1553,7 @@ def dedup_by_cond_id(rows):
     return out
 
 
-def collect_weapon(url, limit, cat_id, suffix):
+def collect_weapon(url, cat_id, suffix):
     """비-활 공격무기 한 종의 현재 시세를 떠서 latest.<suffix>.json 에 쓴다.
 
     24h 합집합(bows 테이블)과 추세는 아직 활 전용이라 안 붙인다. 다만 **크라우드는 붙인다** —
@@ -1532,7 +1572,7 @@ def collect_weapon(url, limit, cat_id, suffix):
             rows,
             verifier=make_harvest_verifier(base, league_path0,
                                            with_category(q0, cat_id), budget=3),
-            league=league, category=cat_id)
+            league=league, category=cat_id, rates=rates)
     except Exception as e:                    # 크라우드는 부가정보 — 실패해도 수집은 나간다
         print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
     if not rows:
@@ -1541,7 +1581,7 @@ def collect_weapon(url, limit, cat_id, suffix):
         print("     %s 수집 0개 — 파일을 갱신하지 않는다(지난 데이터 보존)" % suffix)
         return 0
     out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
-    write_latest({"taken_at": taken, "total": total, "skipped": skipped,
+    write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
                   "rates": rates, "conds": conds, "bows": rows, "trend": None,
                   "category": cat_id}, out_path)
     print("[%s] %s(%s) 수집 %d개 → latest.%s.json"
@@ -1669,7 +1709,7 @@ def release_collector_lock():
         pass
 
 
-def collect_loop(url, every, limit, weapons=False):
+def collect_loop(url, every, weapons=False):
     """weapons=True 면 **한 사이클에 공격무기 13종을 전부** 수집한다(캐스터 제외).
 
     예전엔 사이클마다 한 종씩 순환했다 — 밴드 9개+조건 40회를 돌던 시절엔 무기당 17분이라
@@ -1689,9 +1729,9 @@ def collect_loop(url, every, limit, weapons=False):
                 print("[%s] 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
                 try:
                     if suffix:
-                        collect_weapon(url, limit, cat_id, suffix)
+                        collect_weapon(url, cat_id, suffix)
                     else:
-                        collect(url, limit)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
+                        collect(url)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
                     done += 1
                 except TradeError as e:
                     print("     %s 건너뜀: %s" % (name, e))
@@ -1702,7 +1742,7 @@ def collect_loop(url, every, limit, weapons=False):
                      (time.time() - t0) / 60))
         else:
             try:
-                collect(url, limit)
+                collect(url)
             except TradeError as e:
                 print("[%s] 수집 실패: %s" % (time.strftime("%H:%M:%S"), e))
             except Exception as e:            # 한 번 실패했다고 루프까지 죽으면 안 된다
@@ -1941,13 +1981,16 @@ def demo():
         real = globals()["load_top_dps"]
         real_rates = globals()["best_rates"]
         real_resolve = globals()["resolve_search"]
+        real_h = globals()["HARVEST_URL"]
+        globals()["HARVEST_URL"] = ""         # 크라우드 합류(Cloudflare 워커)도 네트워크다 — 끈다
         # 자체 검증은 절대 네트워크를 타면 안 된다 — collect() 가 부르는 것은 전부 대역한다
         # (best_rates 는 안에서 poe.ninja 를 부르므로 반드시 통째로 대역할 것)
         globals()["resolve_search"] = lambda u: (
             "https://poe.kakaogames.com", "/api/trade2/search/poe2/L", "L", {})
-        globals()["best_rates"] = lambda b, l, c: {"exalted": {"rate": 1.0, "n": None},
-                                                   "divine": {"rate": 300.0, "n": 3}}
-        globals()["load_top_dps"] = lambda u, category=None: (
+        _order = []                                    # 환율 → 아이템 순서를 실제 호출로 잰다
+        globals()["best_rates"] = lambda b, l, c: _order.append("rates") or {
+            "exalted": {"rate": 1.0, "n": None}, "divine": {"rate": 300.0, "n": 3}}
+        globals()["load_top_dps"] = lambda u, category=None: _order.append("items") or (
             [{"name": "활A", "pdps": 100.0, "edps": 5.0, "aps": 1.4, "crit": 6.0,
               "price": 9, "cur": "div", "rarity": "Rare",
               "mods": ["38% increased Critical Hit Chance"]}], 137, 2,
@@ -1965,7 +2008,7 @@ def demo():
             latest = json.load(fh)
         assert latest["bows"][0]["name"] == "활A" and latest["total"] == 137
         assert latest["rates"]["divine"]["rate"] == 300.0      # 환율도 같이 실린다
-        assert list(latest["rates"]) == ["exalted", "divine"]  # 환율이 아이템보다 먼저 잡힌다
+        assert _order[:2] == ["rates", "items"], _order       # 환율이 아이템보다 먼저 잡힌다
         # TOP100 만 수집한다 — 조건 곡선을 위한 추가 검색은 더 이상 없다.
         # (옵션별 프리미엄은 이 매물들의 mods 로 화면에서 로컬 계산한다)
         assert latest["conds"] == [], latest["conds"]
@@ -1978,7 +2021,17 @@ def demo():
         assert collect(u) == n_all                  # 두 번째 스냅샷도 쌓인다
         with db() as con:
             assert con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 2
+        # 활도 빈 결과로 latest.json 을 덮지 않는다(collect_weapon 에만 있던 가드)
+        _w = []; _rw, _rr = globals()["write_latest"], globals()["recent_rows"]
+        globals()["write_latest"] = lambda payload, path=None: _w.append(path)
+        globals()["recent_rows"] = lambda *a, **k: []
+        globals()["load_top_dps"] = lambda u, category=None: ([], 0, 0, "https://poe.kakaogames.com", "L")
+        try:
+            assert collect(u) == 0 and _w == [], "빈 결과인데 latest.json 을 덮었다: %r" % _w
+        finally:
+            globals()["write_latest"], globals()["recent_rows"] = _rw, _rr
     finally:
+        globals()["HARVEST_URL"] = real_h
         globals()["load_top_dps"] = real
         globals()["best_rates"] = real_rates
         globals()["resolve_search"] = real_resolve
@@ -2064,6 +2117,7 @@ def demo():
     # 무기 DPS 와 무관한 동료 옵션을 "이미 셈"으로 삼키면 조건 목록에서 통째로 사라진다
     assert not is_off_dps("[Physical|물리] 피해 118% 증가")
     assert not is_off_dps("[Fire|화염] 피해 10~16 추가")
+    assert is_off_dps("감전된 적에게 번개 피해 1~60 추가")   # 접두 조건이 붙은 추가 피해는 거래소 DPS 밖(실측)
     assert not is_off_dps("공격 속도 12% 증가")
     assert not is_off_dps("공격 속도 12% 감소")   # 감소도 이미 DPS 에 반영
     assert is_off_dps("반려수의 공격 속도 14% 증가")  # 동료 옵션은 무기 DPS 밖
@@ -2095,6 +2149,9 @@ def demo():
     ok = search_api_url("https://evil.com@poe.kakaogames.com/trade2/search/poe2/L/x")
     assert ok == ("https://poe.kakaogames.com", "/api/trade2/search/poe2/L/x"), ok  # userinfo 위장은 무시
     assert search_api_url("https://www.pathofexile.com/trade2/search/poe2/Standard/xy")[0]         == "https://www.pathofexile.com"
+
+    # http:// 링크를 넣어도 요청은 https 로만 나간다 — 세션 쿠키 평문 송출 방지
+    assert search_api_url("http://poe.kakaogames.com/trade2/search/poe2/L/x")[0] == "https://poe.kakaogames.com"
 
     # poe.ninja 환율: divine 기준 primaryValue 를 엑잘 기준으로 환산하고, 형태가 어긋나면
     # 조용히 None(→ best_rates 가 거래소 교환으로 폴백). 네트워크는 대역해서 안 탄다.
@@ -2249,20 +2306,21 @@ def demo():
     finally:
         globals()["api_get"] = _k_api3
     # 크라우드 행의 무기 대조 — 곡선이 무기별로 갈리므로 섞이면 축척이 무너진다.
+    _ok = lambda r: True                 # 아래는 필터(무기·리그)만 보는 테스트 — 신뢰 관측이 비어 진위 확인 대상이 되므로 통과 검증자를 준다
     _mkw = lambda cat, i: {"id": i, "name": "n", "pdps": 900.0, "edps": 0.0, "aps": 1.4,
                            "crit": 6.0, "price": 5, "cur": "divine", "rarity": "Rare",
                            "mods": [], "fee": 1, "league": "L", "cat": cat,
                            "t": int(time.time() * 1000)}
-    assert len(merge_harvest([], rows=[_mkw("weapon.spear", "W1")],
+    assert len(merge_harvest([], rows=[_mkw("weapon.spear", "W1")], verifier=_ok,
                              league="L", category="weapon.spear")) == 1
-    assert merge_harvest([], rows=[_mkw("weapon.spear", "W2")],
+    assert merge_harvest([], rows=[_mkw("weapon.spear", "W2")], verifier=_ok,
                          league="L", category="weapon.bow") == [], "다른 무기가 섞였다"
     # cat 이 없는 옛 행은 활로 본다(그때 게이트가 활 전용이었다)
     _old = {k: v for k, v in _mkw("x", "W3").items() if k != "cat"}
-    assert len(merge_harvest([], rows=[_old], league="L", category="weapon.bow")) == 1
-    assert merge_harvest([], rows=[_old], league="L", category="weapon.spear") == []
+    assert len(merge_harvest([], rows=[_old], verifier=_ok, league="L", category="weapon.bow")) == 1
+    assert merge_harvest([], rows=[_old], verifier=_ok, league="L", category="weapon.spear") == []
     # category 를 안 주면 전부 통과(하위 호환)
-    assert len(merge_harvest([], rows=[_mkw("weapon.spear", "W4")], league="L")) == 1
+    assert len(merge_harvest([], rows=[_mkw("weapon.spear", "W4")], verifier=_ok, league="L")) == 1
 
     # 크라우드 행의 리그 대조 — 다른 리그 매물이 섞이면 같은 DPS 가 다른 가격이 된다.
     assert _norm_league("Runes%20of%20Aldur") == _norm_league("Runes of Aldur")
@@ -2271,12 +2329,12 @@ def demo():
     _mk = lambda lg, i: {"id": i, "name": "n", "pdps": 900.0, "edps": 0.0, "aps": 1.4,
                          "crit": 6.0, "price": 5, "cur": "divine", "rarity": "Rare",
                          "mods": [], "fee": 1, "league": lg, "t": int(time.time() * 1000)}
-    _same = merge_harvest([], rows=[_mk("Runes of Aldur", "L1")], league="Runes%20of%20Aldur")
+    _same = merge_harvest([], rows=[_mk("Runes of Aldur", "L1")], verifier=_ok, league="Runes%20of%20Aldur")
     assert len(_same) == 1, "같은 리그인데 걸러졌다: %r" % _same
-    _diff = merge_harvest([], rows=[_mk("Standard", "L2")], league="Runes%20of%20Aldur")
+    _diff = merge_harvest([], rows=[_mk("Standard", "L2")], verifier=_ok, league="Runes%20of%20Aldur")
     assert _diff == [], "다른 리그 매물이 곡선에 섞였다: %r" % _diff
     # league 를 안 주면(옛 호출부) 예전처럼 전부 통과 — 하위 호환
-    assert len(merge_harvest([], rows=[_mk("Standard", "L3")])) == 1
+    assert len(merge_harvest([], rows=[_mk("Standard", "L3")], verifier=_ok)) == 1
 
     # 매물 가격 화폐: 미러는 받고(시장 최상위 활이 여기 몰려 있다) 하급 화폐는 계속 배제.
     assert "mirror" in PRICE_CURRENCIES, "미러를 빼면 시장 최상위 활이 통째로 사라진다"
@@ -2296,22 +2354,25 @@ def demo():
     # 무기 수집이 0개면 파일을 갱신하지 않는다 — 지난 정상 데이터를 빈 것으로 덮으면 안 된다.
     _kw_write, _kw_load, _kw_rates, _kw_res = write_latest, load_top_dps, best_rates, resolve_search
     _wrote = []
+    _kw_h = globals()["HARVEST_URL"]
     try:
+        globals()["HARVEST_URL"] = ""           # 크라우드 합류는 네트워크 — 자체 검증에선 끈다
         globals()["write_latest"] = lambda payload, path=None: _wrote.append(path)
         globals()["resolve_search"] = lambda u: ("https://h", "/p", "L", {})
         globals()["best_rates"] = lambda b, l, c: {"exalted": {"rate": 1.0}}
         globals()["load_top_dps"] = lambda u, category=None: ([], 0, 0, "https://h", "L")
-        assert collect_weapon("u", 25, "weapon.onesword", "onesword") == 0
+        assert collect_weapon("u", "weapon.onesword", "onesword") == 0
         assert _wrote == [], "0개인데 파일을 썼다: %r" % _wrote
         globals()["load_top_dps"] = lambda u, category=None: (
             [{"name": "x", "pdps": 900.0, "edps": 100.0, "aps": 1.4, "crit": 6.0,
               "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "id": "i1"}],
             5, 0, "https://h", "L")
-        assert collect_weapon("u", 25, "weapon.crossbow", "crossbow") == 1
+        assert collect_weapon("u", "weapon.crossbow", "crossbow") == 1
         assert _wrote and _wrote[-1].endswith("latest.crossbow.json"), _wrote
     finally:
         globals()["write_latest"], globals()["load_top_dps"] = _kw_write, _kw_load
         globals()["best_rates"], globals()["resolve_search"] = _kw_rates, _kw_res
+        globals()["HARVEST_URL"] = _kw_h
 
     # collect_loop(weapons=True): 한 사이클에 13종을 전부 돌고,
     # 한 무기가 실패해도 나머지가 계속 돈다(예전엔 사이클마다 한 종씩 순환).
@@ -2319,7 +2380,7 @@ def demo():
     class _StopCycle(Exception):
         pass
     try:
-        def _cw(u, n, cat, sfx):
+        def _cw(u, cat, sfx):
             _seen_w.append(sfx)
             if sfx == "spear":
                 raise TradeError("한 무기만 실패")   # 나머지를 멈추면 안 된다
@@ -2329,7 +2390,7 @@ def demo():
             raise _StopCycle()                      # 첫 사이클만 돌고 빠져나온다
         time.sleep = _sleep
         try:
-            collect_loop("u", 3600, 25, weapons=True)
+            collect_loop("u", 3600, weapons=True)
         except _StopCycle:
             pass
         assert _seen_w == [w[1] for w in ATTACK_WEAPONS], _seen_w
@@ -2341,6 +2402,22 @@ def demo():
 
     # 상위권은 이제 밴드 판정이 아니라 DPS 정렬로 직접 뜬다(load_top_dps).
     assert TOP_CAP >= 100, "상위 100개를 못 담는다"
+
+    # 정적 파일 게이트: `;params`+%2f 로 translate_path 를 다른 파일로 풀던 우회를 막는다(실서버로 실측)
+    import threading as _th, http.client as _hc
+    _srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler); _port = _srv.server_address[1]
+    _th.Thread(target=_srv.serve_forever, daemon=True).start()
+    def _get(raw, method="GET"):
+        c = _hc.HTTPConnection("127.0.0.1", _port, timeout=5)
+        c.putrequest(method, raw, skip_host=True); c.putheader("Host", "localhost"); c.endheaders()
+        r = c.getresponse(); r.read(); c.close(); return r.status
+    try:
+        assert _get("/index.html?v=1") == 200
+        assert _get("/index.html;%2f..%2fFIXLOG.md") == 404          # 우회 시도
+        assert _get("/latest.json;%2f..%2fserve.py", "HEAD") == 404
+        assert _get("/FIXLOG.md") == 404                              # 화이트리스트 밖
+    finally:
+        _srv.shutdown()
 
     # 리다이렉트 호스트도 화이트리스트로 잠근다 — 302 로 내부 주소로 넘겨도 안 따라간다.
     assert _redirect_allowed("https://www.pathofexile.com/trade2/x")
@@ -2482,11 +2559,14 @@ def demo():
          "price": 4, "cur": "divine", "rarity": "Rare", "mods": ["옵션 +1"],
          "fee": 1, "t": _now},                                                           # 같은 지문
         {"id": "F", "name": "이상화폐", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
-         "price": 9, "cur": "mirror", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},
+         "price": 9, "cur": "transmute", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},
+        {"id": "M", "name": "미러활", "pdps": 100, "edps": 0, "aps": 1, "crit": 1,
+         "price": 1, "cur": "mirror", "rarity": "Rare", "mods": [], "fee": 1, "t": _now},  # 미러는 받는다
     ]
-    _m = merge_harvest(list(_base), rows=_rows)
+    _yes = lambda r: True
+    _m = merge_harvest(list(_base), rows=_rows, verifier=_yes)
     _names = [r["name"] for r in _m]
-    assert _names == ["내활", "유저활"], _names
+    assert _names == ["내활", "유저활", "미러활"], _names
     assert [r for r in _m if r["name"] == "유저활"][0]["src"] == "user"
     assert merge_harvest(list(_base), rows=[]) == _base            # 빈 응답은 무변화
 
@@ -2496,11 +2576,28 @@ def demo():
     assert "조작활" not in [r["name"] for r in merge_harvest(list(_base), rows=_poison)]
     _fair = [{"id": "F", "name": "꿀매물활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
               "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
-    assert "꿀매물활" in [r["name"] for r in merge_harvest(list(_base), rows=_fair)]
-    # 신뢰 기준점이 없는 화폐/대역은 판단 불가 — 통과 (과잉 차단 방지)
+    assert "꿀매물활" in [r["name"] for r in merge_harvest(list(_base), rows=_fair, verifier=_yes)]
+    assert "꿀매물활" not in [r["name"] for r in merge_harvest(list(_base), rows=_fair)]   # 검증 못 하면 안 올린다
+    # 신뢰 기준점이 없는 화폐/대역은 "판단 불가 = 통과"가 아니라 진위 확인 대상이다 —
+    # 예전 규칙에선 신뢰 최고 DPS 를 넘는 위조 행이 검증 0회로 합류해 곡선을 점 하나로 무너뜨렸다
     _nocmp = [{"id": "N", "name": "비교불가활", "pdps": 900, "edps": 0, "aps": 1, "crit": 1,
                "price": 1, "cur": "chaos", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
-    assert "비교불가활" in [r["name"] for r in merge_harvest(list(_base), rows=_nocmp)]
+    _calls0 = []
+    assert "비교불가활" in [r["name"] for r in merge_harvest(
+        list(_base), rows=_nocmp, verifier=lambda r: (_calls0.append(r["id"]), True)[1])]
+    assert _calls0 == ["N"], _calls0
+    assert "비교불가활" not in [r["name"] for r in merge_harvest(list(_base), rows=_nocmp)]
+    _fake = [{"id": "X", "name": "위조활", "pdps": 99999, "edps": 0, "aps": 1, "crit": 1,
+              "price": 1, "cur": "exalted", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    _callsX = []
+    assert "위조활" not in [r["name"] for r in merge_harvest(
+        list(_base), rows=_fake, verifier=lambda r: (_callsX.append(r["id"]), False)[1])]
+    assert _callsX == ["X"], _callsX              # 거래소에 없으면 탈락 — 검증은 반드시 호출된다
+    # 중·하위(신뢰 최저 DPS 아래) 정상 행을 TOP100 최저가와 견줘 날조로 몰면 안 된다 —
+    # 근방(+15%) 기준점이 없으니 10배 가드는 건너뛰고 진위 확인으로 간다
+    _mid = [{"id": "L", "name": "중위활", "pdps": 50, "edps": 0, "aps": 1, "crit": 1,
+             "price": 0.1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
+    assert "중위활" in [r["name"] for r in merge_harvest(list(_base), rows=_mid, verifier=_yes)]
     # 진위 검증: 최전선을 잠식하는(신뢰점보다 싼) 행만 verifier 를 부른다
     _calls = []
     _cheap = [{"id": "V", "name": "잠식활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
@@ -2883,7 +2980,8 @@ def frontier_py(rows):
 # 페이지의 RATE_DEFAULT 와 같은 값 — 환율 수집이 실패한 스냅샷에서도 축척이 살아야 한다.
 # 실제 사고: 교환 API 가 막힌 시간의 수집분에 엑잘 환율만 실려, 디바인 매물 135개가
 # 판정에서 통째로 사라졌었다. 기본값 폴백은 페이지가 이미 쓰는 방식이다.
-DEFAULT_RATES = {"exalted": 1.0, "chaos": 65.0, "divine": 300.0, "annul": 279.0}
+DEFAULT_RATES = {"exalted": 1.0, "chaos": 65.0, "divine": 300.0, "annul": 279.0,
+                 "mirror": 2000000.0}   # index.html RATE_DEFAULT / appraiser.ts DEFAULT_RATES 와 같은 값
 
 
 def market_rows(latest):
@@ -3155,9 +3253,6 @@ if __name__ == "__main__":
         if not url:
             sys.exit('거래소 검색 URL 이 필요합니다:\n'
                      '  python serve.py --collect "https://.../trade2/search/poe2/..."')
-        # 밴드당 25개: 검색 요청은 그대로(한 번에 100 id 를 받으므로)이고 fetch 만 는다.
-        # 실측 예산 — fetch 6시간 1000회 중 시간당 수집 시 ~470회 사용. 표본 목표 5,000개의 1단계.
-        limit = int(arg("--limit", "25"))     # 문턱값 하나당 몇 개까지 뜰지
         every = arg("--every")
         if not os.environ.get("POESESSID"):
             print("참고: POESESSID 미설정 — 거래소가 로그인을 요구하면 파일 맨 위 설명을 보세요.")
@@ -3169,13 +3264,13 @@ if __name__ == "__main__":
                      % (running, LOCK_FILE))
         weapons = "--weapons" in sys.argv       # 공격무기 순환 수집(캐스터 제외, 사이클당 1종)
         if every:
-            collect_loop(url, max(600, int(every)), limit, weapons=weapons)   # 10분보다 자주는 안 뜬다
+            collect_loop(url, max(600, int(every)), weapons=weapons)   # 10분보다 자주는 안 뜬다
         elif weapons:
             # 1회 실행 시엔 활 하나만(순환은 --every 와 함께 의미). 다른 무기는 --category 없이도
             # 순환 루프로만 도는 게 안전하다(레이트 리밋).
-            collect(url, limit)
+            collect(url)
         else:
-            collect(url, limit)
+            collect(url)
         sys.exit(0)
     url = "http://localhost:%d/" % PORT
     print("공격 무기 시세 감정소 → %s   (Ctrl+C 로 종료)" % url)

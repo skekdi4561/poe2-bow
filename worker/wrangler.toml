@@ -7,3 +7,9 @@ binding = "DB"
 database_name = "poe2-bow-harvest"
 # database_id 는 `npx wrangler d1 create poe2-bow-harvest` 실행 후 채운다
 database_id = "5a75a6c9-1a32-4a08-a1fc-b668fd281fd9"
+
+# IP 별 POST /harvest 속도 제한 — 정상 클라이언트는 5초 디바운스·30행 배치라 분당 몇 회면 충분하다
+[[ratelimits]]
+name = "RL"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }

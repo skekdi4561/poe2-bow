@@ -1,10 +1,9 @@
 // ==UserScript==
 // @name         POE2 활 시세 채집기
 // @namespace    poe2-bow-appraiser
-// @version      0.1.1
+// @version      0.2.0
 // @description  거래소에서 이미 보고 있는 활 매물을 주워 '활 시세 감정소'로 흘려보낸다. 추가 요청 0.
 // @match        https://poe.kakaogames.com/trade2/*
-// @match        https://www.pathofexile.com/trade2/*
 // @match        http://localhost:8731/*
 // @match        http://127.0.0.1:8731/*
 // @match        https://skekdi4561.github.io/*
@@ -32,8 +31,15 @@
   var STORE = 'harvest1';   // GM 저장소 열쇠 — 거래소 탭이 쓰고, 감정소 탭이 읽는 다리
   var MAX_ROWS = 800;       // 저장소 예산. 넘치면 오래 본 것부터 버린다
   var MAX_IDS = 3000;
-  var CURRENCIES = { exalted: 1, chaos: 1, divine: 1, annul: 1 };  // serve.py 와 같은 기준
-  var FRAME = { 0: 'Normal', 1: 'Magic', 2: 'Rare', 3: 'Unique' };
+  var CURRENCIES = { exalted: 1, chaos: 1, divine: 1, annul: 1, mirror: 1 };  // serve.py PRICE_CURRENCIES 와 같은 기준
+  var FRAME = { 0: 'Normal', 1: 'Magic', 2: 'Rare', 3: 'Unique', 12: 'Magic', 13: 'Rare', 14: 'Unique' };  // serve.py FRAME_RARITY 와 같은 표(12~14 = 룬 박힌 변형)
+  var RARITIES = { Normal: 1, Magic: 1, Rare: 1, Unique: 1 };
+  var curLeague = '';       // 마지막 검색 URL 의 리그 — 행에 실어 보내 감정소가 스냅샷 리그와 대조한다
+  var leagueOf = function (url) {
+    var m = /\/api\/trade2\/search\/poe2\/([^/?#]+)/.exec(String(url || ''));
+    if (m) { try { curLeague = decodeURIComponent(m[1]); } catch (e) { curLeague = m[1]; } }
+    return curLeague;
+  };
 
   // ---- 순수 함수 (node 로 검증됨) ----
 
@@ -78,7 +84,7 @@
     if (ext.pdps == null && ext.edps == null) return null;
     // 활이라는 확인: ①속성에 클래스가 있거나 ②활 카테고리 검색 결과의 id 였거나. 둘 다 아니면 안 줍는다.
     if (!isBowClass(item) && !(bowIds && res.id && bowIds[res.id])) return null;
-    var rarity = item.rarity || FRAME[item.frameType];
+    var rarity = (item.rarity in RARITIES) ? item.rarity : FRAME[item.frameType];   // 4종 밖 문자열은 frameType 으로
     if (!rarity) return null;                            // 등급 불명이 곡선에 섞이면 못 가려낸다
     // 길이 상한: 페이지 세계는 신뢰할 수 없다(다른 스크립트가 가짜 이벤트를 쏠 수 있다).
     // 거대한 문자열로 GM 저장소·감정소 localStorage 를 부풀리는 것을 막는다.
@@ -95,6 +101,7 @@
     });
     return {
       id: String(res.id || ''),
+      league: curLeague,
       name: ([item.name, item.typeLine || item.baseType].filter(Boolean).join(' ').trim() || '이름 없음').slice(0, 120),
       pdps: Math.round((ext.pdps || 0) * 10) / 10,
       edps: Math.round((ext.edps || 0) * 10) / 10,
@@ -129,6 +136,7 @@
     window.fetch = function (input, init) {
       var url = typeof input === 'string' ? input : ((input && input.url) || '');
       var body = init && typeof init.body === 'string' ? init.body : '';
+      leagueOf(url);
       var p = F.apply(this, arguments);
       if (/\/api\/trade2\/fetch\//.test(url)) {
         p.then(function (r) { r.clone().json().then(onFetch)['catch'](function () {}); })['catch'](function () {});
@@ -141,6 +149,7 @@
     XMLHttpRequest.prototype.open = function (m, u) { this.__poe2bowU = u; this.__poe2bowM = m; return XO.apply(this, arguments); };
     XMLHttpRequest.prototype.send = function (body) {
       var u = String(this.__poe2bowU || ''), self = this;
+      leagueOf(u);
       if (/\/api\/trade2\/(fetch|search)\//.test(u)) {
         this.addEventListener('load', function () {
           try {
@@ -206,8 +215,9 @@
       if (!cur || !cur.rows) return;
       var rows = Object.keys(cur.rows).map(function (k) { return cur.rows[k]; });
       var body = JSON.stringify({ v: 1, at: Date.now(), rows: rows });
-      if (rows.length + ':' + body.length === last) return;   // 변화 없으면 조용히
-      last = rows.length + ':' + body.length;
+      var sig = JSON.stringify(rows);                           // 내용 기준 — 같은 자릿수 가격 변경도 잡는다
+      if (sig === last) return;                                 // 변화 없으면 조용히
+      last = sig;
       try {
         localStorage.setItem('poe2harvest', body);
         window.dispatchEvent(new CustomEvent('poe2harvest-updated'));
@@ -218,14 +228,14 @@
   };
 
   if (typeof GM_getValue === 'function') {
-    if (/kakaogames\.com$|pathofexile\.com$/.test(location.host)) runTrade();
+    if (/kakaogames\.com$/.test(location.host)) runTrade();   // 카카오(한국) 서버만 — 국제 서버 매물은 다른 시장
     else runBridge();
   }
 
   // ---- node 검증/내보내기 (Tampermonkey 에서는 module 이 없어 건너뛴다) ----
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = { clean: clean, num: num, prop: prop, isBowClass: isBowClass,
-                       normalizeRow: normalizeRow, HOOK: HOOK };
+                       normalizeRow: normalizeRow, HOOK: HOOK, leagueOf: leagueOf };
   }
   if (typeof process !== 'undefined' && process.argv && process.argv.indexOf('--test') >= 0) {
     var assert = function (ok, msg) { if (!ok) { console.error('FAIL: ' + msg); process.exit(1); } };
@@ -273,6 +283,14 @@
     assert(normalizeRow(noRar, null) === null, '등급 불명 버림');
     noRar.item.frameType = 3;
     assert(normalizeRow(noRar, null).rarity === 'Unique', 'frameType 대체');
+    noRar.item.frameType = 13;
+    assert(normalizeRow(noRar, null).rarity === 'Rare', '룬 박힌 레어(frameType 13)도 Rare');
+    var weird = mut(['item', 'rarity'], 'Weird'); weird.item.frameType = 2;
+    assert(normalizeRow(weird, null).rarity === 'Rare', '4종 밖 등급 문자열은 frameType 으로');
+    assert(normalizeRow(mut(['item', 'rarity'], 'Weird'), null) === null, '4종 밖 + frameType 없음 = 등급 불명');
+    assert(normalizeRow(mut(['listing', 'price', 'currency'], 'mirror'), null) !== null, '미러 가격은 받는다');
+    assert(leagueOf('https://poe.kakaogames.com/api/trade2/search/poe2/Runes%20of%20Aldur') === 'Runes of Aldur', '검색 URL 에서 리그');
+    assert(normalizeRow(kr, null).league === 'Runes of Aldur', '행에 리그가 실린다');
     assert(normalizeRow(null, null) === null && normalizeRow({}, null) === null, '빈 입력');
     assert(clean('[Physical|물리] 피해') === '물리 피해' && clean(null) === '', 'clean');
     assert(num('6.50%') === 6.5 && num(null) === 0, 'num');
