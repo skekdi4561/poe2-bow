@@ -64,6 +64,14 @@ THRESHOLDS = [400, 500, 600, 680, 760, 840, 920, 1000, 1100]
 # "total 이 TOP_TARGET 이하로 떨어지는 가장 낮은 문턱"을 매 사이클 고른다.
 TOP_TARGET = 100         # 이 개수 안에 들어오는 가장 낮은 문턱을 상위권 밴드로 삼는다
 TOP_CAP = 100            # 그 밴드에서 실제로 뜰 최대 개수(폭주 방지)
+# 최전선 탐침 — TOP100 아래 대역의 "문턱별 최저가"만 뜬다(문턱마다 가장 싼 PROBE_TAKE 개).
+# TOP100 은 시장 꼭대기만 보여 곡선이 600 div 에서 시작했고(실측: 30~300 div 예산에 답이 없었다),
+# 크라우드는 사용자가 있어야 쌓이는 데다 그마저 진위 확인 예산(활 8/무기 3)에 묶인다. 탐침은
+# 사용자 0명이어도 첫 사이클부터 문턱마다 점을 찍고, 그 점들이 신뢰 관측이 되어 크라우드 행
+# 대부분이 "지배당하는 행"으로 무검증 합류하게 만든다(2026-09-03 사용자 결정).
+# 비용: 무기당 검색 +7·fetch +7 — 예전 밴드+조건 수집(검색 49·fetch 90)의 1/6 수준.
+PROBE_THRESHOLDS = [400, 500, 600, 700, 800, 900, 1000]
+PROBE_TAKE = 10
 # 분업(사용자 결정): 저-DPS/저가는 사용자들의 가격검색이 크라우드로 채우고, 고-DPS
 # 끝단은 우리가 전담한다. 그래서 옛 저·중 밴드(450~660 촘촘)를 걷어내고 600~1100 을
 # 촘촘히 덮는다. 400/500 은 크라우드가 아직 작을 때의 최소 baseline.
@@ -871,15 +879,42 @@ def with_category(query, cat_id):
     return q
 
 
+def load_frontier_probe(base, league_path, query, seen_ids=()):
+    """문턱마다 "DPS ≥ 문턱, 가격 오름차순" 검색의 가장 싼 PROBE_TAKE 개 — 그 문턱의 최전선 점.
+
+    문턱은 오름차순이라 결과가 0이면(그 무기의 최고 DPS 가 문턱 아래) 더 높은 문턱은 건너뛴다.
+    한 문턱이 실패해도 나머지는 돈다. 이미 뜬 매물(seen_ids, TOP100)은 fetch 하지 않는다.
+    """
+    seen = set(i for i in seen_ids if i)
+    rows = []
+    for lo in PROBE_THRESHOLDS:
+        throttle("search")
+        try:
+            r = search_min_dps(base, league_path, query, lo)
+        except TradeError as e:
+            print("     탐침 %d+ 실패: %s" % (lo, e))
+            continue
+        ids = (r.get("result") or [])[:PROBE_TAKE]
+        if not ids:
+            break                              # 이 무기엔 이 DPS 가 없다 — 위 문턱도 없다
+        ids = [i for i in ids if i not in seen]
+        if not ids:
+            continue
+        for row in fetch_ids(base, r["id"], ids):
+            seen.add(row.get("id"))
+            rows.append(row)
+    return rows
+
+
 def load_top_dps(page_url, category=None):
-    """시장 DPS 상위 TOP_CAP 개만 뜬다 — 이 수집기가 하는 검색은 이것 하나뿐이다.
+    """시장 DPS 상위 TOP_CAP 개 + 문턱별 최전선 탐침(load_frontier_probe)을 뜬다.
 
     예전에는 DPS 밴드 9개(400~1100)를 훑고 옵션별 조건 곡선까지 따로 검색했다. 그 구조는
     "가격 오름차순 100개에는 비싼 옵션이 붙은 활이 아예 안 들어온다"는 제약을 우회하려던
     것이었는데, **DPS 정렬 상위 100개가 곧 그 비싼 활들 자체**라 우회가 필요 없어졌다.
     옵션별 프리미엄은 이 100개의 mods 로 화면에서 로컬 계산한다(추가 요청 0).
-    낮은 DPS 구간은 값이 사실상 공짜라 수집하지 않는다 — 필요하면 사용자가 화면의
-    "불러오기"로 자기 검색을 직접 합칠 수 있다.
+    낮은 DPS 구간은 통째로 뜨지 않고 문턱별 최저가 몇 개(탐침)만 더한다 — PROBE_THRESHOLDS 참고.
+    사이 구간은 크라우드와 화면의 "불러오기"가 채운다.
 
     category 를 주면 저장된 검색을 그 무기로 재조준한다(기본값 None = 저장된 검색 그대로).
     """
@@ -920,6 +955,11 @@ def load_top_dps(page_url, category=None):
     print("     DPS 상위권(%s): 시장 %s개 중 %d개 수집 — 최고 %.0f DPS%s"
           % (how, total, len(rows), best,
              "" if not skipped else " (제외 %d)" % skipped))
+    probe = load_frontier_probe(base, league_path, query, seen_ids=[x.get("id") for x in rows])
+    if probe:
+        print("     최전선 탐침: %d개 추가 — 최저 %.0f DPS"
+              % (len(probe), min(x["pdps"] + x["edps"] for x in probe)))
+        rows = rows + probe
     return rows, total, skipped, base, league
 
 
@@ -1340,7 +1380,8 @@ def build_trend(hours=72, anchors=None, con=None):
     이미 snapshots.db 에 쌓인 이력을 쓰는 것 — 새 데이터 소스 0. 각 스냅샷은 자기
     시점의 rates 를 저장하므로 그때 환율로 엑잘 환산해야 시점 간 비교가 옳다.
     최저가는 그 DPS 이상 활 중 가장 싼 것(최전선 floor). 희귀만(곡선과 같은 기준).
-    앵커 "top" 은 DPS 문턱 없이 스냅샷 전체의 최저가 — 스냅샷이 곧 TOP100 이므로 "TOP100 진입 가격"이다.
+    앵커 "top" 은 스냅샷에서 DPS 가 높은 순으로 TOP_CAP 개 안에 든 매물의 최저가 = "TOP100 진입 가격".
+    (스냅샷에는 탐침이 뜬 저DPS·저가 행도 섞여 있으므로 전체 최저가를 쓰면 안 된다.)
     """
     anchors = anchors or TREND_ANCHORS
     cut = int((time.time() - hours * 3600) * 1000)
@@ -1367,9 +1408,11 @@ def build_trend(hours=72, anchors=None, con=None):
                 "SELECT pdps, edps, price, cur, rarity FROM bows WHERE snapshot_id = ?",
                 (sid,)).fetchall()
             floors = {}
+            ranked = sorted((b for b in bows if (b[4] or "Rare") == "Rare"),
+                            key=lambda b: (b[0] or 0) + (b[1] or 0), reverse=True)
             for a in anchors:
                 best = None
-                for pdps, edps, price, cur, rarity in bows:
+                for pdps, edps, price, cur, rarity in (ranked[:TOP_CAP] if a == "top" else bows):
                     if (rarity or "Rare") != "Rare":
                         continue
                     r = rate_of(cur)
@@ -1936,12 +1979,13 @@ def demo():
             raise AssertionError("차단됐어야 함: " + bad)
         except TradeError:
             pass
-    # load_top_dps: 검색은 **정렬 1회뿐**이어야 하고(밴드 순회 없음),
+    # load_top_dps: TOP100 은 **정렬 검색 1회**여야 하고(밴드 순회 없음; 탐침은 별도 함수 — 아래서 대역),
     # normalize() 가 버린 매물 수를 실제로 세야 한다(예전엔 "제외 0" 고정 문구였다).
     global PAUSE
     keep_pause = PAUSE
     saved = {k: globals()[k] for k in
-             ("resolve_search", "search_min_dps", "search_top_dps", "fetch_ids", "throttle")}
+             ("resolve_search", "search_min_dps", "search_top_dps", "fetch_ids", "throttle",
+              "load_frontier_probe")}
     try:
         PAUSE = 0
         _searches = []
@@ -1954,11 +1998,18 @@ def demo():
         # 셋을 달라 했는데 하나만 살아 돌아옴 (화폐가 규격 밖이거나 DPS 가 없어서)
         globals()["fetch_ids"] = lambda b, qid, ids: (
             [{"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0}] if ids else [])
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(): []
         rows, total, skipped, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
         assert len(rows) == 1, rows
         assert skipped == 2, "버려진 매물을 안 셌다: %r" % skipped
         assert total == 7, total
         assert _searches == ["top"], "정렬 1회 말고 다른 검색이 나갔다: %r" % _searches
+        # 탐침 행은 TOP100 뒤에 그대로 합쳐진다(탐침 자체의 동작은 별도 단위 테스트)
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(): [
+            {"price": 1, "cur": "divine", "pdps": 400.0, "edps": 0.0, "id": "p1"}]
+        _rows2, _, _, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
+        assert len(_rows2) == 2 and _rows2[-1]["pdps"] == 400.0, _rows2
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(): []
 
         globals()["fetch_ids"] = lambda b, qid, ids: [
             {"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0} for i in ids]
@@ -2313,6 +2364,31 @@ def demo():
         assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
     finally:
         globals()["api_get"] = _k_api3
+    # 최전선 탐침: 문턱마다 가장 싼 PROBE_TAKE 개만, 이미 뜬 id 는 fetch 안 함, 빈 문턱에서 중단, 실패 문턱은 건너뜀
+    _kp = (globals()["search_min_dps"], globals()["fetch_ids"], globals()["throttle"])
+    _probe_calls, _fetched = [], []
+    def _ps(base, lp, q, lo, sort=None):
+        _probe_calls.append(lo)
+        if lo == 500:
+            raise TradeError("일시 실패")
+        if lo >= 800:
+            return {"id": "Q", "result": []}                    # 이 무기 최고 DPS 가 800 아래
+        return {"id": "Q", "result": ["%d-%d" % (lo, i) for i in range(15)]}   # 문턱당 15개 응답
+    def _pf(base, qid, ids):
+        _fetched.append(list(ids))
+        return [{"id": i, "pdps": float(i.split("-")[0]), "edps": 0.0} for i in ids]
+    try:
+        globals()["search_min_dps"], globals()["fetch_ids"] = _ps, _pf
+        globals()["throttle"] = lambda bk, mw=None: None
+        _pr = load_frontier_probe("https://h", "/p", {}, seen_ids=["400-0", "600-3"])
+        assert _probe_calls == [400, 500, 600, 700, 800], _probe_calls        # 800 이 비어 900/1000 은 안 감
+        assert all(len(f) <= PROBE_TAKE for f in _fetched), _fetched            # 문턱당 최대 10개
+        assert "400-0" not in [r["id"] for r in _pr] and "600-3" not in [r["id"] for r in _pr]   # 이미 뜬 매물 제외
+        assert len(_pr) == 10 * 3 - 2, len(_pr)                                  # 400·600·700 (500 실패) 에서 28개
+        assert min(r["pdps"] for r in _pr) == 400.0
+    finally:
+        globals()["search_min_dps"], globals()["fetch_ids"], globals()["throttle"] = _kp
+
     # 크라우드 행의 무기 대조 — 곡선이 무기별로 갈리므로 섞이면 축척이 무너진다.
     _ok = lambda r: True                 # 아래는 필터(무기·리그)만 보는 테스트 — 신뢰 관측이 비어 진위 확인 대상이 되므로 통과 검증자를 준다
     _mkw = lambda cat, i: {"id": i, "name": "n", "pdps": 900.0, "edps": 0.0, "aps": 1.4,
@@ -2876,6 +2952,12 @@ def demo():
         _trt = build_trend(anchors=["top"])
         assert [p["floors"]["top"] for p in _trt["points"]] == [900, 300], _trt
         assert TREND_ANCHORS == ["top"], TREND_ANCHORS    # 기본 앵커는 한 선 — 위젯이 라벨로 그린다
+        # "top" 은 DPS 상위 TOP_CAP 개 안에서만 잰다 — 탐침이 뜬 저DPS·저가 행(400DPS 1div)에 끌려가면 안 된다
+        _kc = globals()["TOP_CAP"]; globals()["TOP_CAP"] = 1
+        try:
+            assert build_trend(anchors=["top"])["points"][-1]["floors"]["top"] == 600, "탐침 행이 TOP100 진입가를 끌어내렸다"
+        finally:
+            globals()["TOP_CAP"] = _kc
         # 오염 방어: rate 없는 통화(annul) 매물은 price*0=0 가짜 최저가를 만들면 안 된다.
         # 그 스냅샷은 통째로 제외돼야 한다(가드 제거 시 floor 0 인 3번째 점이 생겨 두 단언 다 실패).
         with db() as _c:
