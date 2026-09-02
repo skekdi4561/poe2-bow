@@ -2377,6 +2377,17 @@ def demo():
             5, 0, "https://h", "L")
         assert collect_weapon("u", "weapon.crossbow", "crossbow") == 1
         assert _wrote and _wrote[-1].endswith("latest.crossbow.json"), _wrote
+        # latest.<무기>.json 에도 리그가 실린다(index.html loadHarvest 의 채집 행 리그 대조용) —
+        # 값은 load_top_dps 가 URL 에서 잘라온 퍼센트 인코딩을 푼 것이어야 한다
+        _payloads = []
+        globals()["write_latest"] = lambda payload, path=None: _payloads.append(payload)
+        globals()["load_top_dps"] = lambda u, category=None: (
+            [{"name": "x", "pdps": 900.0, "edps": 100.0, "aps": 1.4, "crit": 6.0,
+              "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "id": "i1"}],
+            5, 0, "https://h", "Runes%20of%20Aldur")
+        assert collect_weapon("u", "weapon.spear", "spear") == 1
+        assert _payloads[-1].get("league") == "Runes of Aldur", _payloads[-1].get("league")   # 키 없음/인코딩 그대로면 실패
+        assert _payloads[-1]["category"] == "weapon.spear"
     finally:
         globals()["write_latest"], globals()["load_top_dps"] = _kw_write, _kw_load
         globals()["best_rates"], globals()["resolve_search"] = _kw_rates, _kw_res
@@ -2424,6 +2435,11 @@ def demo():
         assert _get("/index.html;%2f..%2fFIXLOG.md") == 404          # 우회 시도
         assert _get("/latest.json;%2f..%2fserve.py", "HEAD") == 404
         assert _get("/FIXLOG.md") == 404                              # 화이트리스트 밖
+        assert _get("/latest.crossbow.json") == 200                   # 알려진 무기 접미사는 그대로 나간다
+        for _raw in ("/INDEX.HTML", "/index.html/", "/latest.json;x", "//FIXLOG.md"):
+            assert _get(_raw) == 404, _raw   # 대소문자(윈도우 FS 무시)·꼬리 슬래시·;params — 글자 그대로만 통과
+        # 앞의 `//` 는 stdlib 이 게이트보다 먼저 `/` 로 접는다(gh-87389, 열린 리다이렉트 방어) — 게이트는 /index.html 을 본다
+        assert _get("//index.html") == 200
     finally:
         _srv.shutdown()
 
@@ -2620,6 +2636,17 @@ def demo():
     assert _callsB == ["B1"], _callsB                 # 폐기가 아니라 진위 확인으로 갔다
     assert crowd_gate(1450, 300 * 300.0, [dict(d=1500, p=2e6, cur="mirror")], cur="divine") == "verify"
     assert crowd_gate(1450, 1.0, [dict(d=1500, p=2e6, cur="mirror")], cur="mirror") == "drop"   # 같은 화폐면 10배 판정
+    # crowd_gate 경계 — 동점 지배 / 신뢰 관측 없음 / 같은 화폐 근방 없음 / cur=None
+    _T = [dict(d=1500, p=100.0, cur="divine")]
+    assert crowd_gate(1500, 100.0, _T) == "accept"   # DPS 동점·같은 값 = 지배당함(최전선 불변) — 검증 예산을 안 쓴다
+    assert crowd_gate(1500, 99.0, _T) == "verify"    # 동점인데 더 싸면 최전선을 바꾼다 → 진위 확인
+    assert crowd_gate(1501, 100.0, _T) == "verify"   # 더 강하면 지배 관측이 없다 → 진위 확인
+    assert crowd_gate(1000, 1.0, []) == "verify"     # 신뢰 관측 0개 — "판단 불가 = 통과"로 돌아가면 위조가 무검증 합류
+    assert crowd_gate(1000, 1.0, [dict(d=1200, p=100.0, cur="divine")], cur="divine") == "verify"   # +15% 밖이라 근방 아님
+    assert crowd_gate(1000, 1.0, [dict(d=1100, p=100.0, cur="divine")], cur="divine") == "drop"     # 근방·같은 화폐·1/10 미만
+    assert crowd_gate(1000, 10.0, [dict(d=1100, p=100.0, cur="divine")], cur="divine") == "verify"  # 정확히 1/10 은 폐기 아님
+    assert crowd_gate(1000, 1.0, [dict(d=1100, p=100.0, cur="exalted")], cur="divine") == "verify"  # 같은 화폐 근방 없음 → 폐기 대신 확인
+    assert crowd_gate(1000, 1.0, [dict(d=1100, p=100.0, cur="exalted")], cur=None) == "drop"        # cur=None 이면 화폐 무관
     # 진위 검증: 최전선을 잠식하는(신뢰점보다 싼) 행만 verifier 를 부른다
     _calls = []
     _cheap = [{"id": "V", "name": "잠식활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
@@ -2643,6 +2670,7 @@ def demo():
         globals()["throttle"] = lambda bk, mw=None: None
         def _fs(base, lp, q, lo):
             _net["search"] += 1
+            _net["lo"] = lo                            # 검색 문턱을 기록 — 아래서 행의 DPS 와 대조
             return {"id": "Q", "result": ["EXISTS"]}
         def _ff(base, qid, ids):
             return [{"price": 1.0, "cur": "divine"}] if ids == ["EXISTS"] else []
@@ -2663,6 +2691,11 @@ def demo():
         _HARVEST_VERDICTS.clear()
         _v3 = make_harvest_verifier("b", "/l", {}, budget=8)
         assert _v3({"id": "EXISTS", "pdps": 100, "edps": 0, "price": 99, "cur": "divine"}) is False
+        # 검색 문턱(lo)은 그 행의 pdps+edps 를 int 로 내린 값 — 더 높으면 진짜 매물이 결과에 안 잡혀 미확인으로 빠진다
+        _HARVEST_VERDICTS.clear()
+        _v3b = make_harvest_verifier("b", "/l", {}, budget=8)
+        _v3b({"id": "EXISTS", "pdps": 123.4, "edps": 56.7, "price": 1.0, "cur": "divine"})
+        assert _net["lo"] == int(123.4 + 56.7) == 180, _net
         # 일시 실패(TradeError)는 캐시하지 않는다 — 다음 사이클에 다시 본다
         _HARVEST_VERDICTS.clear()
         def _boom(base, lp, q, lo): raise TradeError("429")
@@ -2750,6 +2783,18 @@ def demo():
              "rates": {"exalted": {"rate": 1}, "divine": {"rate": 400}},
              "bows": _thin["bows"]}
     assert market_rows(_full)[2] is False                      # 다 재왔으면 폴백 아님
+    # 미러 기본 환율: rates 키가 아예 없는 스냅샷에서도 mirror 매물이 2,000,000 ex 로 살아남는다
+    # (빠지면 최상위 대역이 통째로 사라진다 — index.html RATE_DEFAULT 와 같은 값)
+    _mir_latest = {"taken_at": int(time.time() * 1000),
+                   "bows": [{"pdps": 1500, "edps": 0, "price": 1, "cur": "mirror", "rarity": "Rare"},
+                            {"pdps": 500, "edps": 0, "price": 10, "cur": "exalted", "rarity": "Rare"}]}
+    _mr, _mrt, _mfb = market_rows(_mir_latest)
+    assert _mrt["mirror"] == DEFAULT_RATES["mirror"] == 2000000.0, _mrt
+    assert [r["p"] for r in _mr if r["d"] == 1500] == [2000000.0], _mr   # p = 2,000,000 × price 1
+    assert _mfb is True, "기본값 환율이 실제로 쓰였는데 폴백 표시가 없다"
+    _mv = price_verdict(_it, _mir_latest)                     # DPS 142 → 최저가 d500, 한 계단 위 = 미러 매물
+    assert "한 계단 위: DPS 1500 부터 6,667 div" in _mv, _mv   # 2,000,000 ex ÷ divine 기본값 300
+    assert "매물 2개" in _mv and "환율 일부 기본값" in _mv, _mv
 
     # guard_rates: 빠진 화폐는 기억으로 메우고, 급락 관측은 독버섯으로 걸러낸다
     _mem = {"divine": 400.0, "annul": 160.0}

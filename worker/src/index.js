@@ -36,7 +36,7 @@ async function ensureSchema(db) {
 // 상한은 조작 방어의 핵심: isFinite 만 보면 pdps:1e300 이 통과해 곡선의 DPS 축을
 // 통째로 날려버린다(실측 재현됨). 현실 활 최대치보다 넉넉하되 유한하게 잡는다.
 const MAX = { dps: 100000, aps: 100, crit: 100, price: 1e9, fee: 1e12 };
-function validRow(r) {
+export function validRow(r) {
   if (!r || typeof r !== "object") return null;
   const num = (v) => typeof v === "number" && isFinite(v);
   if (typeof r.id !== "string" || !r.id || r.id.length > 64) return null;
@@ -75,6 +75,10 @@ function validRow(r) {
   };
 }
 
+// 저장 키. fee 없는 행은 lid 를 따로 둔다 — 같은 id 로 fee 없는 행이 먼저 오면 INSERT OR IGNORE 가
+// 48시간 동안 정당한 fee 행을 막았다(공개된 실제 매물 id 로 선점 가능). (test.mjs 가 import 하므로 export)
+export const lidOf = (r) => (r.fee == null ? "nofee:" + r.id : r.id);
+
 export default {
   async fetch(req, env) {
     if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
@@ -101,9 +105,7 @@ export default {
         .filter(Boolean);
       const now = Date.now();
       // 쓰기 절약: 이미 저장된 매물 id 는 쓰기 전에 걸러낸다(정직한 재전송만 접힌다 — 소진 공격은 위 속도 제한이 맡는다).
-      // fee 없는 행은 lid 를 따로 둔다 — 같은 id 로 fee 없는 행이 먼저 오면 INSERT OR IGNORE 가
-      // 48시간 동안 정당한 fee 행을 막았다(공개된 실제 매물 id 로 선점 가능).
-      const lidOf = (r) => (r.fee == null ? "nofee:" + r.id : r.id);
+      // 키는 lidOf(모듈 상단) — fee 없는 행은 "nofee:" 접두로 정당한 fee 행과 분리.
       // (읽기는 하루 500만 행 무료라 사실상 공짜, 쓰기는 10만 행 한도가 병목)
       let fresh = rows;
       if (rows.length) {

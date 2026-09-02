@@ -429,9 +429,9 @@ let localMin = 0;        // 로컬 분류 조건의 최소값 (측정 조건은 
 // 저장값은 파싱만 되면 끝이 아니라 "모양"까지 봐야 한다. try/catch 는 JSON 오류만 잡아서,
 // 'poe2bows' 가 "123" 이면 bows 가 숫자가 되고 bows.map 에서 부팅 중 페이지가 통째로 죽는다
 // (실측: TypeError: bows.map is not a function — 표·차트·예산표 전부 빈 채로 영구 고착).
-function readStore(key, fallback, ok){
+function readStore(key, fallback, ok, storage = localStorage){   // storage: 자체 테스트가 가짜 저장소를 넣는다
   try {
-    const v = JSON.parse(localStorage.getItem(key) || 'null');
+    const v = JSON.parse(storage.getItem(key) || 'null');
     return ok(v) ? v : fallback;
   } catch (e) { return fallback; }
 }
@@ -728,10 +728,11 @@ function loadHarvest(src){                      // src: 테스트 주입용(없�
   bows = mergeHarvest(bows, rows);
   return rows.length;
 }
-window.addEventListener('poe2harvest-updated', () => {
+function onHarvestUpdated(){
   // 활 뷰가 아니면 섞지 않고, 스냅샷 응답 전이면 미룬다(리그를 모르면 필터가 전부 통과시킨다 — selectWeapon 이 응답 뒤 합친다)
   if (curWeapon === '' && snapReady && loadHarvest()) { save(); refresh(); }
-});
+}
+window.addEventListener('poe2harvest-updated', onHarvestUpdated);
 const dayStr = t => { const d = new Date(t); return `${d.getMonth() + 1}월 ${d.getDate()}일`; };
 const agoStr = t => {
   const m = (Date.now() - t) / 60000;
@@ -933,12 +934,10 @@ $('filters').addEventListener('input', e => {
 });
 
 // 뺀 활이 왜 빠졌는지 따로 세어둔다 — "등급 때문"과 "이 기준으론 DPS 가 0이라"는 전혀 다른 얘기다
-function partition(){
-  const metric = $('metric').value;
-  const critOn = $('crit-on').checked;
-  const critBonus = +$('crit-bonus').value || 0;
+// 기준(지표·치명타·등급)은 화면에서 읽는 게 기본 — 자체 테스트는 인자로 직접 넣는다
+function partition(metric = $('metric').value, critOn = $('crit-on').checked,
+                   critBonus = +$('crit-bonus').value || 0, rareOnly = $('rare-only').checked){
   // 직접 등록한 활은 등급 정보가 없다 — 사용자가 일부러 넣은 것이므로 절대 거르지 않는다
-  const rareOnly = $('rare-only').checked;
   const all = bows.map((b, i) => {
     const raw = dpsOf(b);
     const k = critOn ? 1 + (b.crit || 0) / 100 * (critBonus / 100) : 1;
@@ -1201,9 +1200,8 @@ $('freshness').addEventListener('click', e => {
 });
 
 // 조건을 건 곡선이 기준 곡선보다 같은 DPS에서 얼마나 비싼가
-function premium(f, baseFront, active, thin){
+function premium(f, baseFront, active, thin, el = $('premium')){   // el: 자체 테스트가 빈 객체를 넣어 문구를 본다
   const THIN = ' <span class="sub">겹친 조건은 표본이 얇습니다 — 실제 시세는 이보다 비쌀 수 있습니다.</span>';
-  const el = $('premium');
   if (!active) {
     el.className = 'premium none';
     el.textContent = '조건을 걸면 그 옵션에 얼마를 더 내야 하는지 여기 나옵니다.';
@@ -1348,13 +1346,16 @@ $('unit').addEventListener('change', e => {
   render();
 });
 $('metric').addEventListener('change', render);
+function applyRateInput(cur, raw, storage = localStorage){   // storage: 자체 테스트가 가짜 저장소를 넣는다
+  const v = +raw;
+  if (okRate(v)) rates[cur] = v;
+  else delete rates[cur];                               // 빈 칸·0·숫자 아님은 수동값 해제 → 스냅샷/기본값으로 복귀
+  try { storage.setItem('poe2rates', JSON.stringify(rates)); } catch (err) {}
+  dataRev++;                                            // 예산표 곡선 캐시도 새 환율로 다시 계산
+}
 $('rate-rows').addEventListener('input', e => {
   if (!e.target.dataset.cur) return;
-  const v = +e.target.value;
-  if (okRate(v)) rates[e.target.dataset.cur] = v;
-  else delete rates[e.target.dataset.cur];              // 빈 칸·0 은 수동값 해제 → 스냅샷/기본값으로 복귀
-  try { localStorage.setItem('poe2rates', JSON.stringify(rates)); } catch (err) {}
-  dataRev++;                                            // 예산표 곡선 캐시도 새 환율로 다시 계산
+  applyRateInput(e.target.dataset.cur, e.target.value);
   render();
 });
 $('rare-only').addEventListener('change', refresh);
@@ -1441,11 +1442,11 @@ $('trade-go').addEventListener('click', async () => {
     if (frontier([]).length !== 0) throw new Error('빈 목록');
 
     // 저장값이 깨져 있어도 부팅은 되어야 한다 — 모양까지 확인하는지
+    // 프로덕션 readStore 에 가짜 저장소를 넣어 검사한다 — 로직을 여기서 재구현하면 프로덕션이 바뀌어도 통과한다(V37)
     const store = {};
     const fake = { getItem: k => (k in store ? store[k] : null) };
-    const read = (raw, fb, ok) => { store.k = raw;
-      try { const v = JSON.parse(fake.getItem('k') || 'null'); return ok(v) ? v : fb; }
-      catch (e) { return fb; } };
+    const read = (raw, fb, ok) => { store.k = raw; return readStore('k', fb, ok, fake); };
+    if (readStore('k', 'fb', () => true, { getItem(){ throw new Error('저장소 고장'); } }) !== 'fb') throw new Error('readStore: 저장소가 던져도 폴백');
     for (const bad of ['123', '"문자열"', 'null', '{잘못된 JSON', '{"a":1}']) {
       if (!Array.isArray(read(bad, [], Array.isArray))) throw new Error('readStore array ' + bad);
     }
@@ -1638,6 +1639,81 @@ $('trade-go').addEventListener('click', async () => {
     const one = [{ offs: { x: 1 } }, { offs: { x: 1 } }, { offs: { x: 1 } }];
     if (bar(one, 'x') !== '') throw new Error('bar 값 하나');
     if (!bar([{ offs: { x: 1 } }, { offs: { x: 3 } }], 'x')) throw new Error('bar 값 여럿');
+
+    // ① 자동 단위는 divine/exalted 만 — annul(142)·chaos(35)가 있어도 그리로 새지 않는다(축은 annul 인데 표는 ex 로 갈리던 결함)
+    { const kR1 = rates, kS1 = snapRates;
+      rates = { chaos: 35, annul: 142, divine: 369 }; snapRates = {};
+      if (pickUnit(20) !== 'exalted') throw new Error('pickUnit 20 ex → ' + pickUnit(20));   // annul 을 고르면 20/142=0.14 로 통과했을 값
+      if (pickUnit(400) !== 'divine') throw new Error('pickUnit 400 ex → ' + pickUnit(400)); // 1 div 어치를 넘으면 div
+      rates = kR1; snapRates = kS1; }
+
+    // ② 예산표 옵션은 "거른 뒤 12개" — 표본 2개짜리 상위등급 12개가 앞자리를 차지해도 표본 43개 옵션이 살아남아야 한다
+    { const kSnap2 = snapConds; snapConds = [];
+      const row = (i, offs) => ({ offs, cond: null, d: 100 + i, p: 1 + i });
+      const rows = [];
+      for (let k = 0; k < 12; k++) for (let i = 0; i < 2; i++) rows.push(row(rows.length, { ['치명타 확률 #% 종류' + k]: 5 }));   // optRank 0
+      for (let i = 0; i < 43; i++) rows.push(row(rows.length, { '정확도 #': 100 }));                                         // optRank 1
+      const fr = optionFronts(rows);
+      if (!fr.some(r => r.kind === '표본 43')) throw new Error('optionFronts: 12개를 자른 뒤 걸러 표본 43 옵션이 사라졌다');   // 옛 순서(slice→filter)면 실패
+      if (fr.some(r => r.kind === '표본 2')) throw new Error('optionFronts: 표본 2개는 곡선이 아니다');
+      snapConds = kSnap2; }
+
+    // ③ 신선한 매물이 1건뿐이면 점 하나로는 곡선이 안 되니 만료분까지 보여준다(staleKept) — 위젯(appraiser.ts)과 같은 임계 <2
+    { const kB3 = bows, kR3 = rates, kS3 = snapRates, tN3 = Date.now();
+      rates = {}; snapRates = {};
+      const mk = (n, stale) => ({ name: n, pdps: 100, edps: 0, aps: 1, crit: 0, price: 1, cur: 'exalted', mods: [],
+                                  t: stale ? tN3 - ROW_TTL - 60000 : tN3 });
+      bows = [mk('f1', false), mk('s1', true), mk('s2', true), mk('s3', true)];
+      let pt = partition('total', false, 0, false);
+      if (!pt.staleKept || pt.base.length !== 4 || pt.byStale !== 0) throw new Error('partition 신선 1건: 만료분까지 남겨야(staleKept)');   // 임계가 <1 이면 실패
+      bows.push(mk('f2', false));
+      pt = partition('total', false, 0, false);
+      if (pt.staleKept || pt.base.length !== 2 || pt.byStale !== 3) throw new Error('partition 신선 2건: 만료분은 빼야');
+      bows = kB3; rates = kR3; snapRates = kS3; }
+
+    // ④ 환율 칸 입력: 빈 칸은 수동값 해제, 숫자 아닌 값(주입 시도)은 저장 안 됨, 정상값은 반영 + 예산표 캐시 무효화(dataRev)
+    { const kR4 = rates, kD4 = dataRev, st = {}, fakeSt = { setItem(k, v){ st[k] = String(v); } };
+      rates = { divine: 300, chaos: 65 };
+      applyRateInput('divine', '', fakeSt);
+      if ('divine' in rates) throw new Error('빈 칸이 수동값을 해제하지 않았다');
+      applyRateInput('chaos', '"><img', fakeSt);
+      if ('chaos' in rates || st.poe2rates.includes('<')) throw new Error('숫자 아닌 값이 저장됐다: ' + st.poe2rates);
+      const d0 = dataRev;
+      applyRateInput('divine', '400', fakeSt);
+      if (rates.divine !== 400 || dataRev !== d0 + 1) throw new Error('정상값 반영 또는 예산표 캐시 무효화 실패');
+      if (st.poe2rates !== JSON.stringify({ divine: 400 })) throw new Error('저장값이 rates 와 다르다: ' + st.poe2rates);
+      rates = kR4; dataRev = kD4; }
+
+    // ⑤ 채집 이벤트 게이트(node 샌드박스에서만 — 게이트가 깨지면 실제 저장소를 읽고 덮어쓰므로 브라우저에선 안 돌린다)
+    if (localStorage._s) {
+      const kW5 = curWeapon, kS5 = snapReady, kB5 = bows, kL5 = snapLeague, kD5 = dataRev;
+      localStorage._s.poe2harvest = JSON.stringify({ rows: [{ id: 'hv1', t: Date.now(), league: 'L', pdps: 100, edps: 0, aps: 1,
+                                                               crit: 0, price: 1, cur: 'exalted', mods: [] }] });
+      curWeapon = ''; snapLeague = 'L'; snapReady = false; bows = [{ name: 'keep' }];
+      onHarvestUpdated();
+      if (bows.length !== 1 || bows[0].name !== 'keep') throw new Error('snapReady 전에 채집이 합류했다');   // 리그를 모른 채 전부 통과시키던 결함
+      snapReady = true; bows = [];
+      onHarvestUpdated();
+      if (bows.length !== 1 || bows[0].id !== 'hv1' || !bows[0].hv) throw new Error('snapReady 뒤 채집이 합류하지 않았다');
+      if (localStorage._s.poe2bows !== JSON.stringify(bows)) throw new Error('합류 뒤 저장되지 않았다');
+      curWeapon = 'spear'; bows = [{ name: 'keep2' }];
+      onHarvestUpdated();
+      if (bows.length !== 1 || bows[0].name !== 'keep2') throw new Error('비-활 뷰에서 채집이 합류했다');
+      delete localStorage._s.poe2harvest; delete localStorage._s.poe2bows;
+      curWeapon = kW5; snapReady = kS5; bows = kB5; snapLeague = kL5; dataRev = kD5; }
+
+    // ⑥ 프리미엄 문구: 겹치는 DPS 구간이 없을 때와 매물이 없을 때는 다른 말을 해야 한다(둘 다 "잴 수 없음"으로 뭉개지던 결함)
+    { const el6 = {};
+      premium([{ d: 100, p: 5 }], [{ d: 200, p: 10 }], true, false, el6);
+      if (!el6.textContent.includes('겹치지 않아')) throw new Error('구간 불일치 문구: ' + el6.textContent);
+      premium([], [{ d: 200, p: 10 }], true, false, el6);
+      if (!el6.textContent.includes('매물이 없습니다')) throw new Error('매물 없음 문구: ' + el6.textContent);
+      premium([], [], false, false, el6);
+      if (!el6.textContent.includes('조건을 걸면')) throw new Error('조건 없음 문구: ' + el6.textContent); }
+
+    // ⑦ 접두 조건이 붙은 추가 피해("감전된 적에게 …")는 거래소 DPS 밖 — serve.py·appraiser.ts 와 같은 문자열로 같은 주장
+    if (!isOffDps('감전된 적에게 번개 피해 1~60 추가')) throw new Error('조건부 추가 피해는 DPS 밖');
+    if (isOffDps('번개 피해 19~420 추가')) throw new Error('무조건 추가 피해는 이미 셈');
   } catch (e) {
     console.error(e);
     $('fail').style.display = 'block';
