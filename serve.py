@@ -852,7 +852,7 @@ ATTACK_WEAPONS = [
     ("weapon.onemace",   "onemace",  "한손 철퇴"),   # 베이스 43, 최고 1335
     ("weapon.twomace",   "twomace",  "양손 철퇴"),   # 베이스 41, 최고 1798
     ("weapon.spear",     "spear",    "창"),          # 베이스 36, 최고 1294
-    ("weapon.warstaff",  "warstaff", "쿼터스태프"),  # 베이스 36, 최고 2025
+    ("weapon.warstaff",  "warstaff", "육척봉"),  # 베이스 36, 최고 2025
 ]
 # POE2 에 아직 없는 공격 무기 — 출시되면 위 목록으로 옮기면 그대로 수집된다.
 # (id 는 EE2 CATEGORY_TO_TRADE_ID 확인분이라 그대로 쓰면 된다)
