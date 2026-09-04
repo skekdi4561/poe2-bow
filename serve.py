@@ -827,6 +827,16 @@ def resolve_search(page_url):
     if hit and time.time() - hit[1] < SEARCH_CACHE_TTL:
         return hit[0]
     base, api_path = search_api_url(page_url)
+    # 거래소 주소에는 두 형태가 있다: 저장된 검색 ID(10자 안팎)와, 검색 조건을 gzip+base64 로
+    # 통째로 넣은 긴 형태("H4sI" 로 시작). 뒤엣것은 저장된 자원이 아니라 404 가 나는데,
+    # 그 404 만 보고는 리그 이름이 틀린 건지 검색이 사라진 건지 알 수 없어 헤매게 된다
+    # (2026-09-05 새 리그 첫 실행에서 실제로 겪음). 요청을 보내기 전에 여기서 가려낸다.
+    _sid = api_path.rsplit("/", 1)[-1]
+    if _sid.startswith("H4sI") or len(_sid) > 40:
+        raise TradeError(
+            "이 링크에는 검색 조건이 통째로 들어 있어서 수집기가 쓸 수 없습니다. "
+            "거래소에서 검색 버튼을 눌러 결과 페이지로 넘어간 뒤의 주소를 쓰세요 — "
+            "마지막 구간이 10자 안팎의 짧은 ID 여야 합니다(지금은 %d자)." % len(_sid))
     league_path = api_path.rsplit("/", 1)[0]
     # 교환 API 경로에는 "poe2/" 가 없다: /api/trade2/exchange/<리그>
     league = league_path.rsplit("/", 1)[-1]
