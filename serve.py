@@ -9,7 +9,7 @@
     Windows PowerShell:  $env:POESESSID="..."; python serve.py
 쿠키값은 이 스크립트만 읽고 페이지로는 절대 안 내려간다.
 """
-import json, os, re, shutil, sqlite3, sys, threading, time, urllib.error, urllib.request, webbrowser
+import base64, gzip, json, os, re, shutil, sqlite3, sys, threading, time, urllib.error, urllib.request, webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, quote as urlquote, unquote as urlunquote
 from statistics import median
@@ -813,6 +813,22 @@ _SEARCH_CACHE = {}
 SEARCH_CACHE_TTL = 900          # 15분. 한 수집 사이클(실측 ~17분) 안의 중복만 접고 다음 사이클은 다시 뜬다
 
 
+def query_from_url_blob(blob):
+    """검색 조건이 통째로 박힌 주소 구간(gzip+base64, "H4sI" 시작)에서 질의문을 꺼낸다.
+    거래소가 저장된 검색 ID 대신 이 형태를 주기 시작했다(2026-09-05 새 리그 첫날 실측).
+    URL-safe base64 라 -/_ 를 되돌리고 패딩을 채운 뒤 gzip 을 푼다. 네트워크는 안 탄다."""
+    s = blob.replace("-", "+").replace("_", "/")
+    s += "=" * (-len(s) % 4)
+    try:
+        q = json.loads(gzip.decompress(base64.b64decode(s)))
+    except Exception as e:
+        raise TradeError("주소에 박힌 검색 조건을 해독하지 못했습니다(%s). "
+                         "거래소에서 검색을 다시 실행하고 주소를 그대로 복사해주세요." % e)
+    if not isinstance(q, dict):
+        raise TradeError("주소에서 꺼낸 검색 조건의 형태가 예상과 다릅니다: %r" % (q,))
+    return q
+
+
 def resolve_search(page_url):
     """저장된 검색 링크에서 리그 주소와 질의문을 꺼낸다.
     환율을 먼저 뜨려면 아이템을 긁기 전에 리그를 알아야 한다.
@@ -828,20 +844,18 @@ def resolve_search(page_url):
         return hit[0]
     base, api_path = search_api_url(page_url)
     # 거래소 주소에는 두 형태가 있다: 저장된 검색 ID(10자 안팎)와, 검색 조건을 gzip+base64 로
-    # 통째로 넣은 긴 형태("H4sI" 로 시작). 뒤엣것은 저장된 자원이 아니라 404 가 나는데,
-    # 그 404 만 보고는 리그 이름이 틀린 건지 검색이 사라진 건지 알 수 없어 헤매게 된다
-    # (2026-09-05 새 리그 첫 실행에서 실제로 겪음). 요청을 보내기 전에 여기서 가려낸다.
+    # 통째로 넣은 긴 형태("H4sI" 로 시작). 2026-09-05 새 리그부터 검색 버튼을 눌러도 뒤엣것이
+    # 나온다 — 그 주소로 조회하면 저장된 자원이 없어 404 다. 뒤엣것은 조건이 주소 안에 다 있으니
+    # 요청 없이 그 자리에서 푼다(사이클마다 요청도 하나 줄어든다).
     _sid = api_path.rsplit("/", 1)[-1]
-    if _sid.startswith("H4sI") or len(_sid) > 40:
-        raise TradeError(
-            "이 링크에는 검색 조건이 통째로 들어 있어서 수집기가 쓸 수 없습니다. "
-            "거래소에서 검색 버튼을 눌러 결과 페이지로 넘어간 뒤의 주소를 쓰세요 — "
-            "마지막 구간이 10자 안팎의 짧은 ID 여야 합니다(지금은 %d자)." % len(_sid))
     league_path = api_path.rsplit("/", 1)[0]
     # 교환 API 경로에는 "poe2/" 가 없다: /api/trade2/exchange/<리그>
     league = league_path.rsplit("/", 1)[-1]
-    throttle("search")                     # /search/ 버킷을 소모하므로 페이싱 대상이다
-    query = api_get(base + api_path).get("query")
+    if _sid.startswith("H4sI"):
+        query = query_from_url_blob(_sid)      # 주소에 박힌 조건 — 요청 없음
+    else:
+        throttle("search")                 # /search/ 버킷을 소모하므로 페이싱 대상이다
+        query = api_get(base + api_path).get("query")
     if query is None:
         raise TradeError("저장된 검색을 읽지 못했습니다. 링크를 다시 확인해주세요.")
     out = (base, league_path, league, query)
@@ -2332,6 +2346,24 @@ def demo():
         except TradeError:
             pass
         assert "https://evil.com/trade2/search/poe2/L/x" not in _SEARCH_CACHE
+        # 조건이 주소에 박힌 형태(H4sI…)는 요청 없이 그 자리에서 푼다 — 2026-09-05 새 리그부터
+        # 거래소가 저장된 검색 ID 대신 이 형태를 준다. 요청하면 404 라 반드시 로컬 해독이어야 한다.
+        _q = {"status": {"option": "securable"},
+              "filters": {"type_filters": {"filters": {"rarity": {"option": "rare"}}}}}
+        _blob = base64.b64encode(gzip.compress(json.dumps(_q).encode())).decode()
+        _blob = _blob.replace("+", "-").replace("/", "_").rstrip("=")
+        assert _blob.startswith("H4sI"), _blob[:8]
+        assert query_from_url_blob(_blob) == _q
+        _n = len(_calls)
+        _r = resolve_search("https://poe.kakaogames.com/trade2/search/poe2/L/" + _blob)
+        assert _r[3] == _q, "주소에 박힌 조건을 못 꺼냄: %r" % (_r[3],)
+        assert len(_calls) == _n, "주소에 조건이 있는데 거래소에 요청을 보냄"
+        assert _r[2] == "L", "리그를 잘못 잘라냄: %r" % (_r[2],)
+        try:
+            query_from_url_blob("H4sI망가진값")
+            assert False, "깨진 blob 이 통과됨"
+        except TradeError:
+            pass
     finally:
         globals()["api_get"], globals()["throttle"] = _k_api, _k_thr
         _SEARCH_CACHE.clear()
