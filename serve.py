@@ -1482,6 +1482,23 @@ def write_latest(payload, path=None):
 TREND_ANCHORS = ["top"]
 
 
+# 이력을 며칠 남길지. 읽는 쪽 창이 24h(합집합)·48h(환율 기억)·72h(추세)라 그 밖은
+# 아무도 안 본다. 7일이면 가장 긴 창의 2.3배 여유다.
+# 안 지우면 무한히 자란다 — 실측 하루 90스냅샷 16MB, 무기 7종을 한 리그(3개월) 돌리면
+# 기가바이트 단위가 되고 매 사이클의 DB 열기·질의가 같이 느려진다.
+PRUNE_DAYS = 7
+
+
+def prune_db(con, days=PRUNE_DAYS):
+    """읽는 창 밖 스냅샷과 그 매물을 지운다. 지운 스냅샷 수를 돌려준다."""
+    cut = int((time.time() - days * 86400) * 1000)
+    con.execute("DELETE FROM bows WHERE snapshot_id IN"
+                " (SELECT id FROM snapshots WHERE taken_at < ?)", (cut,))
+    # ponytail: VACUUM 은 안 한다 — 파일이 줄지는 않지만 sqlite 가 빈 페이지를 재사용해
+    # 크기가 평형에 머문다. 한 번 크게 불어난 파일을 줄이고 싶을 때만 손으로 VACUUM.
+    return con.execute("DELETE FROM snapshots WHERE taken_at < ?", (cut,)).rowcount
+
+
 def _league_sql(league, alias="s."):
     """리그를 주면 "그 리그 + 리그가 안 찍힌 옛 행" 으로 좁히는 WHERE 조각."""
     if not league:
@@ -1701,6 +1718,9 @@ def collect(url):
             [(sid, b["name"], b["pdps"], b["edps"], b["aps"], b["crit"],
               b["price"], b["cur"], b["rarity"], json.dumps(b["mods"], ensure_ascii=False),
               b.get("cond"), b.get("id")) for b in bows])
+        _pruned = prune_db(con)
+    if _pruned:
+        print("     오래된 이력 %d개 스냅샷 정리(%d일 밖)" % (_pruned, PRUNE_DAYS))
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
     merged = recent_rows(league=league)
     try:
@@ -1800,6 +1820,7 @@ def collect_weapon(url, cat_id, suffix):
             [(sid, r["name"], r["pdps"], r["edps"], r["aps"], r["crit"],
               r["price"], r["cur"], r["rarity"], json.dumps(r["mods"], ensure_ascii=False),
               r.get("cond"), r.get("id")) for r in trusted])
+        prune_db(con)                     # 무기 경로는 조용히 — 활 경로가 대표로 알린다
     # 추세는 쓰기 트랜잭션 밖에서 — 안에서 던지면 방금 넣은 스냅샷까지 롤백된다.
     # 활 경로와 같이 "부가정보라 실패해도 수집은 나간다"로 감싼다.
     try:
@@ -3168,6 +3189,25 @@ def demo():
     # 정확히 3배 경계는 통과(거부는 미만/초과만) — 400*3=1200, 400/3≈133.3
     assert guard_rates({"divine": {"rate": 1200}}, {"divine": 400.0})["divine"]["rate"] == 1200
     assert guard_rates({"divine": {"rate": 400 / 3.0}}, {"divine": 400.0})["divine"]["rate"] == 400 / 3.0
+
+    # 이력 정리: 읽는 창 밖은 지우되 창 안은 절대 안 건드린다(지우면 추세·합집합이 빈다)
+    _kdP = DB; _dP = tempfile.mkdtemp(); DB = os.path.join(_dP, "p.db")
+    try:
+        _nowP = int(time.time() * 1000)
+        with db() as _cP:
+            for _age_d in (0, 1, 6, 8, 30):
+                _sP = _cP.execute("INSERT INTO snapshots(taken_at,source_url) VALUES (?,?)",
+                                  (_nowP - _age_d * 86400000, "u")).lastrowid
+                _cP.execute("INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,"
+                            "rarity,mods,id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (_sP, "d%d" % _age_d, 500.0, 0.0, 1.0, 5.0, 1.0,
+                             "exalted", "Rare", "[]", "i%d" % _age_d))
+        with db() as _cP:
+            assert prune_db(_cP) == 2, "8일·30일치만 지워야 한다"
+            assert [r[0] for r in _cP.execute("SELECT name FROM bows ORDER BY name")] == ["d0", "d1", "d6"]
+            assert prune_db(_cP) == 0                     # 두 번 돌려도 더 지울 게 없다
+    finally:
+        DB = _kdP; shutil.rmtree(_dP, ignore_errors=True)
 
     # 리그 경계: 지난 리그 이력이 이번 리그 환율 기억·추세·24시간 합집합에 새면 안 된다.
     # 실사고: 지난 리그 divine 300 이 기억에 남아 이번 리그 65.6 을 하루 종일 "3배 밖"으로 거부했다.
