@@ -63,7 +63,7 @@
     return null;
   };
 
-  // 활인지 확인. 쇠뇌([Crossbow|쇠뇌])에도 pdps 가 있어서 "Bow" 부분 일치로는 안 된다 — 정확 일치만.
+  // 활인지 확인. 석궁(게임 데이터는 [Crossbow|쇠뇌])에도 pdps 가 있어서 "Bow" 부분 일치로는 안 된다 — 정확 일치만.
   var isBowClass = function (item) {
     var lists = (item && item.properties) || [];
     for (var i = 0; i < lists.length; i++) {
@@ -279,7 +279,7 @@
     assert(br.mods.length <= 40 && br.mods[0].length <= 200, '옵션 길이 상한');
     assert(normalizeRow(mut(['item', 'name'], Array(9999).join('활')), null).name.length <= 120, '이름 길이 상한');
     assert(r.name === '파멸의 노래 고급 광신자 활', '이름');
-    assert(normalizeRow(mut(['item', 'properties', 0, 'name'], '[Crossbow|쇠뇌]'), null) === null, '쇠뇌는 버린다');
+    assert(normalizeRow(mut(['item', 'properties', 0, 'name'], '[Crossbow|쇠뇌]'), null) === null, '석궁은 버린다');
     assert(normalizeRow(mut(['item', 'properties', 0, 'name'], 'Bow'), null) !== null, '영문 Bow');
     assert(normalizeRow(mut(['item', 'properties', 0, 'name'], 'Crossbow'), null) === null, '영문 Crossbow 버림');
     var noClass = mut(['item', 'properties', 0, 'name'], '품질');

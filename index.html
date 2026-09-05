@@ -1,7 +1,7 @@
 <meta charset="utf-8">
 <title>공격 무기 시세 감정소</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="POE2 공격 무기 7종(활·쇠뇌·한손 철퇴·양손 철퇴·창·육척봉·부적), 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 가격 곡선.">
+<meta name="description" content="POE2 공격 무기 7종(활·석궁·한손 철퇴·양손 철퇴·창·육척봉·부적), 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 가격 곡선.">
 <link rel="icon" href="favicon.png">
 <meta property="og:type" content="website">
 <meta property="og:title" content="공격 무기 시세 감정소">
@@ -688,7 +688,7 @@ let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가
 // 순서·접미사·표시명은 serve.py 의 ATTACK_WEAPONS 와 같아야 한다.
 const WEAPONS = [
   { suffix: '',         label: '활' },
-  { suffix: 'crossbow', label: '쇠뇌' },
+  { suffix: 'crossbow', label: '석궁' },
   { suffix: 'onemace',  label: '한손 철퇴' },
   { suffix: 'twomace',  label: '양손 철퇴' },
   { suffix: 'spear',    label: '창' },
@@ -702,7 +702,7 @@ function weaponLabel(){
   return (WEAPONS.find(w => w.suffix === curWeapon) || WEAPONS[0]).label;
 }
 // 무기 이름 + 조사. 받침이 있으면 앞엣것, 없으면 뒤엣것 — "창이(가)" 같은 표기를 안 쓴다.
-// (활·창·부적·육척봉은 받침 있음, 쇠뇌·한손 철퇴·양손 철퇴는 없음.)
+// (활·석궁·창·부적·육척봉은 받침 있음, 한손 철퇴·양손 철퇴는 없음.)
 function weaponJosa(withBatchim, without){
   const w = weaponLabel(), c = w.charCodeAt(w.length - 1) - 0xac00;
   return w + (c >= 0 && c < 11172 && c % 28 ? withBatchim : without);
@@ -1781,7 +1781,8 @@ $('trade-go').addEventListener('click', async () => {
     if (weaponLabel() !== '활') throw new Error('weaponLabel 미지 접미사는 활로');
     // 조사 — 받침 유무로 갈린다. "창이(가)" 같은 표기가 화면에 나가면 안 된다
     curWeapon = 'spear';    if (weaponJosa('이', '가') !== '창이') throw new Error('조사 받침 있음');
-    curWeapon = 'crossbow'; if (weaponJosa('이', '가') !== '쇠뇌가') throw new Error('조사 받침 없음');
+    curWeapon = 'twomace';  if (weaponJosa('이', '가') !== '양손 철퇴가') throw new Error('조사 받침 없음');
+    curWeapon = 'crossbow'; if (weaponJosa('이', '가') !== '석궁이') throw new Error('조사 석궁');
     curWeapon = 'talisman'; if (weaponJosa('은', '는') !== '부적은') throw new Error('조사 은/는');
     curWeapon = kWL;
   } catch (e) { console.error(e); $('fail').style.display = 'block'; }

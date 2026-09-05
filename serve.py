@@ -894,7 +894,7 @@ def resolve_search(page_url):
 # 로 분류하고 거래 id 가 weapon.talisman 이다).
 ATTACK_WEAPONS = [
     ("weapon.bow",       "",         "활"),          # 베이스 32, 최고 1534 DPS
-    ("weapon.crossbow",  "crossbow", "쇠뇌"),        # 베이스 29, 최고 1723
+    ("weapon.crossbow",  "crossbow", "석궁"),        # 베이스 29, 최고 1723
     ("weapon.onemace",   "onemace",  "한손 철퇴"),   # 베이스 43, 최고 1335
     ("weapon.twomace",   "twomace",  "양손 철퇴"),   # 베이스 41, 최고 1798
     ("weapon.spear",     "spear",    "창"),          # 베이스 36, 최고 1294
