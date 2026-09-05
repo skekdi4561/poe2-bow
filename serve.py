@@ -1157,6 +1157,11 @@ def db():
         con.execute("ALTER TABLE bows ADD COLUMN cond TEXT")
     if "id" not in {r[1] for r in con.execute("PRAGMA table_info(bows)")}:
         con.execute("ALTER TABLE bows ADD COLUMN id TEXT")   # 거래소 매물 id — 합집합 중복 제거용
+    if "category" not in cols:
+        # 무기 구분(2026-09-05). NULL = 활 — 예전 스냅샷이 전부 활이라 이관이 필요 없다.
+        # 이 칸이 생기기 전에는 활만 DB 에 쌓여서 다른 무기는 추세를 그릴 재료가 없었다.
+        con.execute("ALTER TABLE snapshots ADD COLUMN category TEXT")
+    con.execute("CREATE INDEX IF NOT EXISTS snapshots_time ON snapshots(taken_at, category)")
     return con
 
 
@@ -1403,7 +1408,7 @@ def write_latest(payload, path=None):
 TREND_ANCHORS = ["top"]
 
 
-def build_trend(hours=72, anchors=None, con=None):
+def build_trend(hours=72, anchors=None, con=None, category=None):
     """최근 N시간 스냅샷마다 앵커 DPS 의 최저가(엑잘 환산)를 뽑아 시계열을 만든다.
 
     이미 snapshots.db 에 쌓인 이력을 쓰는 것 — 새 데이터 소스 0. 각 스냅샷은 자기
@@ -1411,6 +1416,9 @@ def build_trend(hours=72, anchors=None, con=None):
     최저가는 그 DPS 이상 활 중 가장 싼 것(최전선 floor). 희귀만(곡선과 같은 기준).
     앵커 "top" 은 스냅샷에서 DPS 가 높은 순으로 TOP_CAP 개 안에 든 매물의 최저가 = "TOP100 진입 가격".
     (스냅샷에는 탐침이 뜬 저DPS·저가 행도 섞여 있으므로 전체 최저가를 쓰면 안 된다.)
+
+    category=None 은 활(옛 스냅샷이 전부 활이라 그 칸이 NULL 이다). 다른 무기는 그 거래 id 를
+    넘긴다 — 무기를 안 가르면 육척봉 가격이 활 추세로 섞여 들어간다.
     """
     anchors = anchors or TREND_ANCHORS
     cut = int((time.time() - hours * 3600) * 1000)
@@ -1419,8 +1427,9 @@ def build_trend(hours=72, anchors=None, con=None):
         con = db(); close = True
     try:
         snaps = con.execute(
-            "SELECT id, taken_at, rates FROM snapshots WHERE taken_at >= ? ORDER BY taken_at ASC",
-            (cut,)).fetchall()
+            "SELECT id, taken_at, rates FROM snapshots"
+            " WHERE taken_at >= ? AND category IS ? ORDER BY taken_at ASC",
+            (cut, category)).fetchall()
         points = []
         for sid, taken, rates_json in snaps:
             try:
@@ -1472,12 +1481,16 @@ def recent_rows(hours=24):
     """
     cut = int((time.time() - hours * 3600) * 1000)
     with db() as con:
-        row = con.execute("SELECT id FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        # category IS NULL = 활. 2026-09-05 부터 다른 무기도 같은 표에 쌓이므로 반드시 가른다 —
+        # 안 가르면 육척봉·창 매물이 활 곡선의 24시간 합집합으로 흘러든다.
+        row = con.execute(
+            "SELECT id FROM snapshots WHERE category IS NULL ORDER BY id DESC LIMIT 1").fetchone()
         latest_snap = row[0] if row else -1
         rows = con.execute(
             "SELECT b.id, b.snapshot_id, s.taken_at, b.name, b.pdps, b.edps, b.aps, b.crit,"
             " b.price, b.cur, b.rarity, b.mods, b.cond FROM bows b"
-            " JOIN snapshots s ON s.id = b.snapshot_id WHERE s.taken_at >= ?"
+            " JOIN snapshots s ON s.id = b.snapshot_id"
+            " WHERE s.taken_at >= ? AND s.category IS NULL"
             " ORDER BY s.taken_at DESC, b.rowid ASC", (cut,)).fetchall()
     out, seen, fps = [], set(), set()
     for lid, sid, taken, name, pdps, edps, aps, crit, price, cur, rarity, mods, cond in rows:
@@ -1515,7 +1528,8 @@ def rate_memory(hours=48):
     try:
         with db() as con:
             for (raw,) in con.execute(
-                    "SELECT rates FROM snapshots WHERE taken_at >= ? ORDER BY id DESC", (cut,)):
+                    "SELECT rates FROM snapshots WHERE taken_at >= ? AND category IS NULL"
+                    " ORDER BY id DESC", (cut,)):
                 for c, v in (json.loads(raw or "{}")).items():
                     # 기억은 "받아들여진 값"으로만 만든다 — 거부된 관측(obs)을 섞으면
                     # 상주 사기가 기억을 점령한다(실사고 #15~17). 소급 정정된 행도 rate 를 쓴다.
@@ -1659,9 +1673,25 @@ def collect_weapon(url, cat_id, suffix):
         # 지난 정상 수집분을 날려버리면 사이트가 "아직 수집 안 됨"으로 후퇴한다.
         print("     %s 수집 0개 — 파일을 갱신하지 않는다(지난 데이터 보존)" % suffix)
         return 0
+    # 이 무기 이력을 남긴다 — 추세("TOP100 진입 최저가")를 그릴 재료다. 2026-09-05 전에는
+    # 활만 DB 에 쌓여서 다른 무기 곡선에는 추세 칸이 아예 안 떴다. 곡선 자체는 예전처럼
+    # 이번 수집분만 쓴다(활의 24시간 합집합은 활 전용 — 여기서 흉내 내지 않는다).
+    with db() as con:
+        sid = con.execute(
+            "INSERT INTO snapshots(taken_at, source_url, total, kept, rates, category)"
+            " VALUES (?,?,?,?,?,?)",
+            (taken, url, total, len(rows), json.dumps(rates, ensure_ascii=False),
+             cat_id)).lastrowid
+        con.executemany(
+            "INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,mods,cond,id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(sid, r["name"], r["pdps"], r["edps"], r["aps"], r["crit"],
+              r["price"], r["cur"], r["rarity"], json.dumps(r["mods"], ensure_ascii=False),
+              r.get("cond"), r.get("id")) for r in rows])
+        trend = build_trend(con=con, category=cat_id)
     out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
-                  "rates": rates, "conds": conds, "bows": rows, "trend": None,
+                  "rates": rates, "conds": conds, "bows": rows, "trend": trend,
                   "category": cat_id}, out_path)
     print("[%s] %s(%s) 수집 %d개 → latest.%s.json"
           % (time.strftime("%H:%M:%S"), suffix, cat_id, len(rows), suffix))
@@ -3014,6 +3044,33 @@ def demo():
         _tr3 = build_trend(anchors=[700])
         assert all(p["floors"].get("700", 1) != 0 for p in _tr3["points"]), _tr3  # 0-floor 오염 없음
         assert len(_tr3["points"]) == 2, _tr3                                     # annul 전용 s3 제외
+        # 무기별 추세(2026-09-05): 한 표에 여러 무기가 쌓이므로 서로 새면 안 된다.
+        # 활 추세에 육척봉 가격이 섞이면 사용자가 다른 시장의 선을 보게 된다.
+        _sw = _c.execute("INSERT INTO snapshots(taken_at,source_url,rates,category)"
+                         " VALUES (?,?,?,?)",
+                         (_now, "u", json.dumps({"divine": {"rate": 300}}),
+                          "weapon.warstaff")).lastrowid
+        # 매물 id 를 넣어야 24시간 합집합이 이 행을 실제로 후보로 올린다 —
+        # id 없는 행은 최신 스냅샷 것만 쓰는 규칙에 먼저 걸려 걸러져서 시험이 헛돈다.
+        _c.execute("INSERT INTO bows(snapshot_id,pdps,edps,price,cur,rarity,id)"
+                   " VALUES (?,?,?,?,?,?,?)", (_sw, 2000, 0, 42, "exalted", "Rare", "W-1"))
+        _c.commit()                       # build_trend 는 별도 연결로 읽는다
+        _tw = build_trend(anchors=["top"], category="weapon.warstaff")
+        assert [p["floors"]["top"] for p in _tw["points"]] == [42], _tw   # 육척봉 것만
+        _tb = build_trend(anchors=["top"])                                 # 활(category IS NULL)
+        assert all(p["floors"]["top"] != 42 for p in _tb["points"]), _tb   # 육척봉이 안 샘
+        assert len(_tb["points"]) == 2, _tb                                # 활 스냅샷 수 그대로
+        # 24시간 합집합(활 곡선)도 다른 무기 행을 끌어오면 안 된다
+        assert all((r.get("pdps") or 0) != 2000 for r in recent_rows()), "합집합에 육척봉이 섞임"
+        # 환율 기억도 활 스냅샷만 본다 — 한 사이클에 7종이 쌓이면 "최근 3개"가 같은 시점이 돼
+        # 시점 간 중앙값이라는 방어가 무너진다
+        # 기억은 "최근 3개의 중앙값"이라 한 건만 넣으면 중앙값이 안 움직여 시험이 헛돈다.
+        # 두 건을 넣어야 활 필터가 빠졌을 때 중앙값이 9 로 뒤집힌다.
+        for _i in range(2):
+            _c.execute("INSERT INTO snapshots(taken_at,source_url,rates,category) VALUES (?,?,?,?)",
+                       (_now, "u", json.dumps({"divine": {"rate": 9}}), "weapon.spear"))
+        _c.commit()
+        assert rate_memory().get("divine") == 300, rate_memory()
     finally:
         DB = _keep_bt; shutil.rmtree(_td, ignore_errors=True)
 
