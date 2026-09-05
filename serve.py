@@ -1001,11 +1001,19 @@ def load_top_dps(page_url, category=None):
         how = "정렬"
     except TradeError as e:
         # 정렬을 거부하는 서버/리그가 있을 수 있다. 그때도 "상위만" 원칙은 지켜야 하므로
-        # 최상단 문턱 밴드로 대체한다 — 아래 구간으로 내려가지는 않는다.
-        print("     DPS 정렬 실패 — 최상단 밴드로 대체: %s" % e)
-        throttle("search")
-        r = search_min_dps(base, league_path, query, THRESHOLDS[-1])
-        how = "밴드 %d+" % THRESHOLDS[-1]
+        # 문턱 밴드로 대체하되, **매물이 있는 가장 높은 밴드**까지 내려간다.
+        # 예전엔 THRESHOLDS[-1](=1100) 하나에 고정이었는데 그건 활이 1534 DPS 까지 가던
+        # 지난 리그 축척이라, 새 리그 시장(최고 393~690)에서는 이 폴백이 **반드시 0건**이었다.
+        # 그러면 그 무기는 "수집 0개"로 조용히 멈춘다 — 안전망이 있는 척만 하는 상태였다.
+        # 하한(THRESHOLDS[0]=400)이 있으므로 "아래 구간으로 내려가지 않는다"는 원칙은 그대로다.
+        print("     DPS 정렬 실패 — 문턱 밴드로 대체: %s" % e)
+        r, lo = None, THRESHOLDS[-1]
+        for lo in reversed(THRESHOLDS):
+            throttle("search")
+            r = search_min_dps(base, league_path, query, lo)
+            if r.get("total"):
+                break                       # 매물이 있는 최상단 밴드
+        how = "밴드 %d+" % lo
 
     ids = (r.get("result") or [])[:TOP_CAP]
     total = r.get("total") or 0
@@ -2162,7 +2170,17 @@ def demo():
         globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
             _bands.append(lo) or {"id": "q", "total": 7, "result": ["a"]})
         load_top_dps("https://h/trade2/search/poe2/L/x")
-        assert _bands == [THRESHOLDS[-1]], "정렬 실패 시 저DPS 로 내려갔다: %r" % _bands
+        assert _bands == [THRESHOLDS[-1]], "매물이 있으면 첫 밴드에서 멈춰야 한다: %r" % _bands
+        # 최상단 밴드가 비면(새 리그처럼 시장 최고 DPS 가 낮으면) 매물이 있는 밴드까지 내려간다 —
+        # 예전엔 여기서 0건을 받고 그대로 끝나 그 무기가 조용히 멈췄다.
+        _bands.clear()
+        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
+            _bands.append(lo) or ({"id": "q", "total": 0, "result": []} if lo > 600
+                                  else {"id": "q", "total": 7, "result": ["a"]}))
+        load_top_dps("https://h/trade2/search/poe2/L/x")
+        assert _bands == [1100, 1000, 920, 840, 760, 680, 600], _bands
+        assert _bands[-1] == 600, "매물 있는 밴드에서 멈춰야 한다: %r" % _bands
+        assert min(_bands) >= THRESHOLDS[0], "하한 아래로 내려갔다: %r" % _bands
     finally:
         PAUSE = keep_pause
         globals().update(saved)
