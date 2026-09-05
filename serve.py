@@ -69,8 +69,18 @@ TOP_CAP = 100            # 그 밴드에서 실제로 뜰 최대 개수(폭주 �
 # 크라우드는 사용자가 있어야 쌓이는 데다 그마저 진위 확인 예산(활 8/무기 3)에 묶인다. 탐침은
 # 사용자 0명이어도 첫 사이클부터 문턱마다 점을 찍고, 그 점들이 신뢰 관측이 되어 크라우드 행
 # 대부분이 "지배당하는 행"으로 무검증 합류하게 만든다(2026-09-03 사용자 결정).
-# 비용: 무기당 검색 +7·fetch +7 — 예전 밴드+조건 수집(검색 49·fetch 90)의 1/6 수준.
-PROBE_THRESHOLDS = [400, 500, 600, 700, 800, 900, 1000]
+# 비용: 무기당 검색 +PROBE_LEVELS·fetch +PROBE_LEVELS — 예전 밴드+조건 수집(검색 49·fetch 90)의 1/6 수준.
+#
+# 문턱은 **고정값이 아니라 이번 사이클 상위 100개의 DPS 하한(cut)에서 유도한다**(2026-09-05).
+# 예전엔 [400,500,…,1000] 고정이었는데, 그건 활이 1534 DPS 까지 가던 지난 리그 기준이라
+# 새 리그 2일차 시장(최고 393~659)에서는 거의 안 걸렸다 — 한손 철퇴는 최고 393 이라 문턱이
+# **하나도 안 걸려 탐침이 0회** 돌았고, 활은 400 하나만 걸렸다. 그 결과 중·저 DPS 구간이
+# 통째로 비어(실측: 시장의 6.7~35.7% 만 보유) 옵션을 걸면 곡선이 무너졌다.
+# cut 아래로만 둔다 — cut 위는 상위 100개가 이미 덮는다.
+PROBE_LEVELS = 4          # 무기당 문턱 수 = 사이클당 검색·fetch 각 +4
+PROBE_FLOOR = 0.45        # 가장 낮은 문턱 = cut 의 45% (그 아래는 살 사람이 없다)
+PROBE_SHAPE = 1.5         # >1 이면 위쪽이 촘촘해진다 — 가격이 DPS 에 지수로 오르므로
+                          # 곡선이 급한 고-DPS 쪽에 점이 더 필요하다
 PROBE_TAKE = 10
 # 분업(사용자 결정): 저-DPS/저가는 사용자들의 가격검색이 크라우드로 채우고, 고-DPS
 # 끝단은 우리가 전담한다. 그래서 옛 저·중 밴드(450~660 촘촘)를 걷어내고 600~1100 을
@@ -908,30 +918,51 @@ def with_category(query, cat_id):
     return q
 
 
-def load_frontier_probe(base, league_path, query, seen_ids=()):
+def probe_levels(cut, n=None, floor=None, shape=None):
+    """상위 100개의 DPS 하한(cut) 아래에 문턱을 n 개 놓는다 — 위쪽이 촘촘하게.
+
+    frac_i = 1 - (1-floor) * ((i+1)/n)**shape 이라, shape>1 이면 간격이 내려갈수록 넓어진다.
+    (예: cut=226, n=4 → 210·182·145·102 — 210~182 은 28 인데 145~102 는 43)
+    가격은 DPS 에 대해 대략 지수로 오르므로 곡선이 급한 위쪽 해상도가 더 값지다.
+    """
+    n = PROBE_LEVELS if n is None else n
+    floor = PROBE_FLOOR if floor is None else floor
+    shape = PROBE_SHAPE if shape is None else shape
+    if not cut or cut <= 0 or n <= 0:
+        return []
+    out = []
+    for i in range(n):
+        f = 1.0 - (1.0 - floor) * (((i + 1) / float(n)) ** shape)
+        lo = int(round(cut * f))
+        if lo > 0 and lo not in out:
+            out.append(lo)
+    return out
+
+
+def load_frontier_probe(base, league_path, query, seen_ids=(), levels=None):
     """문턱마다 "DPS ≥ 문턱, 가격 오름차순" 검색의 가장 싼 PROBE_TAKE 개 — 그 문턱의 최전선 점.
 
-    문턱은 오름차순이라 결과가 0이면(그 무기의 최고 DPS 가 문턱 아래) 더 높은 문턱은 건너뛴다.
-    한 문턱이 실패해도 나머지는 돈다. 이미 뜬 매물(seen_ids, TOP100)은 fetch 하지 않는다.
+    문턱은 **내림차순**이다(probe_levels 가 cut 아래로 놓는다). 낮은 문턱은 높은 문턱의
+    상위집합이라 결과가 0이 되는 일이 없으므로 중간에 끊지 않는다 — 대신 이미 뜬 매물을
+    빼고 남는 게 없으면 그 문턱만 건너뛴다. 한 문턱이 실패해도 나머지는 돈다.
     """
     seen = set(i for i in seen_ids if i)
     rows = []
-    for lo in PROBE_THRESHOLDS:
+    for lo in (levels if levels is not None else []):
         throttle("search")
         try:
             r = search_min_dps(base, league_path, query, lo)
         except TradeError as e:
             print("     탐침 %d+ 실패: %s" % (lo, e))
             continue
-        ids = (r.get("result") or [])[:PROBE_TAKE]
+        ids = [i for i in (r.get("result") or [])[:PROBE_TAKE] if i not in seen]
         if not ids:
-            break                              # 이 무기엔 이 DPS 가 없다 — 위 문턱도 없다
-        ids = [i for i in ids if i not in seen]
-        if not ids:
-            continue
+            continue                           # 이 대역은 이미 다 갖고 있다
+        got = 0
         for row in fetch_ids(base, r["id"], ids):
             seen.add(row.get("id"))
-            rows.append(row)
+            rows.append(row); got += 1
+        print("     탐침 %d+ : %d개" % (lo, got))   # 어느 대역이 실제로 수확되는지 봐야 문턱을 조율한다
     return rows
 
 
@@ -984,7 +1015,13 @@ def load_top_dps(page_url, category=None):
     print("     DPS 상위권(%s): 시장 %s개 중 %d개 수집 — 최고 %.0f DPS%s"
           % (how, total, len(rows), best,
              "" if not skipped else " (제외 %d)" % skipped))
-    probe = load_frontier_probe(base, league_path, query, seen_ids=[x.get("id") for x in rows])
+    # 문턱은 이번 사이클 상위 100개의 DPS 하한에서 유도한다 — 시장이 커지든 작아지든 따라간다.
+    _cut = min((x["pdps"] + x["edps"] for x in rows), default=0)
+    _levels = probe_levels(_cut)
+    if _levels:
+        print("     탐침 문턱(상위 %d개 하한 %.0f 기준): %s" % (len(rows), _cut, _levels))
+    probe = load_frontier_probe(base, league_path, query,
+                                seen_ids=[x.get("id") for x in rows], levels=_levels)
     if probe:
         print("     최전선 탐침: %d개 추가 — 최저 %.0f DPS"
               % (len(probe), min(x["pdps"] + x["edps"] for x in probe)))
@@ -2057,18 +2094,18 @@ def demo():
         # 셋을 달라 했는데 하나만 살아 돌아옴 (화폐가 규격 밖이거나 DPS 가 없어서)
         globals()["fetch_ids"] = lambda b, qid, ids: (
             [{"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0}] if ids else [])
-        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(): []
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None: []
         rows, total, skipped, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
         assert len(rows) == 1, rows
         assert skipped == 2, "버려진 매물을 안 셌다: %r" % skipped
         assert total == 7, total
         assert _searches == ["top"], "정렬 1회 말고 다른 검색이 나갔다: %r" % _searches
         # 탐침 행은 TOP100 뒤에 그대로 합쳐진다(탐침 자체의 동작은 별도 단위 테스트)
-        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(): [
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None: [
             {"price": 1, "cur": "divine", "pdps": 400.0, "edps": 0.0, "id": "p1"}]
         _rows2, _, _, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
         assert len(_rows2) == 2 and _rows2[-1]["pdps"] == 400.0, _rows2
-        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(): []
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None: []
 
         globals()["fetch_ids"] = lambda b, qid, ids: [
             {"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0} for i in ids]
@@ -2441,15 +2478,26 @@ def demo():
         assert _sent[-1]["sort"] == {"price": "asc"}, "기본 정렬이 바뀌면 최전선이 깨진다"
     finally:
         globals()["api_get"] = _k_api3
-    # 최전선 탐침: 문턱마다 가장 싼 PROBE_TAKE 개만, 이미 뜬 id 는 fetch 안 함, 빈 문턱에서 중단, 실패 문턱은 건너뜀
+    # 탐침 문턱은 상위 100개의 DPS 하한(cut)에서 유도한다 — 고정값 [400..1000] 은 지난 리그
+    # 축척이라 새 리그 시장(최고 393~659)에서 한손 철퇴는 0회, 활은 1회밖에 안 걸렸다.
+    _lv = probe_levels(226)
+    assert _lv == sorted(_lv, reverse=True), _lv                    # 내림차순
+    assert _lv[0] < 226 and _lv[-1] >= int(226 * PROBE_FLOOR) - 1, _lv   # cut 아래, 바닥 위
+    _gaps = [_lv[i] - _lv[i + 1] for i in range(len(_lv) - 1)]
+    assert _gaps == sorted(_gaps), _gaps          # 아래로 갈수록 간격이 넓다 = 위로 갈수록 촘촘
+    assert probe_levels(0) == [] and probe_levels(500, n=0) == []    # cut 없음/문턱 0개면 안 뜬다
+    assert len(set(probe_levels(20))) == len(probe_levels(20))      # 작은 cut 에서 문턱이 겹치지 않는다
+
+    # 탐침 본체: 문턱마다 가장 싼 PROBE_TAKE 개만, 이미 뜬 id 는 fetch 안 함, 실패 문턱은 건너뜀.
+    # 문턱이 내림차순이라 낮은 쪽이 상위집합 — 중간에 끊지 않는다(끊으면 아래 대역을 통째로 잃는다).
     _kp = (globals()["search_min_dps"], globals()["fetch_ids"], globals()["throttle"])
     _probe_calls, _fetched = [], []
     def _ps(base, lp, q, lo, sort=None):
         _probe_calls.append(lo)
-        if lo == 500:
+        if lo == 182:
             raise TradeError("일시 실패")
-        if lo >= 800:
-            return {"id": "Q", "result": []}                    # 이 무기 최고 DPS 가 800 아래
+        if lo == 145:
+            return {"id": "Q", "result": ["210-0"]}     # 이미 뜬 것뿐 — 이 문턱만 건너뛴다
         return {"id": "Q", "result": ["%d-%d" % (lo, i) for i in range(15)]}   # 문턱당 15개 응답
     def _pf(base, qid, ids):
         _fetched.append(list(ids))
@@ -2457,12 +2505,16 @@ def demo():
     try:
         globals()["search_min_dps"], globals()["fetch_ids"] = _ps, _pf
         globals()["throttle"] = lambda bk, mw=None: None
-        _pr = load_frontier_probe("https://h", "/p", {}, seen_ids=["400-0", "600-3"])
-        assert _probe_calls == [400, 500, 600, 700, 800], _probe_calls        # 800 이 비어 900/1000 은 안 감
+        _pr = load_frontier_probe("https://h", "/p", {}, seen_ids=["210-0", "102-3"],
+                                  levels=[210, 182, 145, 102])
+        assert _probe_calls == [210, 182, 145, 102], _probe_calls   # 빈/실패 문턱에서 안 끊긴다
         assert all(len(f) <= PROBE_TAKE for f in _fetched), _fetched            # 문턱당 최대 10개
-        assert "400-0" not in [r["id"] for r in _pr] and "600-3" not in [r["id"] for r in _pr]   # 이미 뜬 매물 제외
-        assert len(_pr) == 10 * 3 - 2, len(_pr)                                  # 400·600·700 (500 실패) 에서 28개
-        assert min(r["pdps"] for r in _pr) == 400.0
+        assert "210-0" not in [r["id"] for r in _pr] and "102-3" not in [r["id"] for r in _pr]
+        # 상위 10개를 먼저 자른 뒤 이미 뜬 것을 뺀다 — 210·102 에서 각 9개(seen 1개씩 소진),
+        #  182 는 실패, 145 는 응답이 전부 기존 매물이라 fetch 0회.
+        assert len(_pr) == 9 + 9, len(_pr)
+        assert min(r["pdps"] for r in _pr) == 102.0  # 가장 낮은 문턱까지 실제로 내려간다
+        assert load_frontier_probe("https://h", "/p", {}, levels=[]) == []      # 문턱이 없으면 요청 0
     finally:
         globals()["search_min_dps"], globals()["fetch_ids"], globals()["throttle"] = _kp
 
