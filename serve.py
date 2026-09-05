@@ -1253,7 +1253,7 @@ def _norm_league(v):
 def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, rates=None):
     """크라우드 수집 행을 24시간 합집합에 합류시킨다.
 
-    오버레이 앱(poe2-appraiser)은 사용자가 스스로 한 활 가격 검색의 응답을
+    오버레이 앱(poe2-budget-of-exile)은 사용자가 스스로 한 활 가격 검색의 응답을
     익명으로 수합 서버에 올린다 — 추가 API 호출 없이 표본이 사용자 수에 비례해 는다.
     즉시구매 수수료(fee)가 관측된 행만 신뢰한다: 협상용 낚시 가격이 최전선을
     끌어내리는 오염을 막기 위해서다(환율 min 오염 사고와 같은 교훈).
