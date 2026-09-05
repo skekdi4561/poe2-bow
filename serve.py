@@ -2516,6 +2516,11 @@ def demo():
     _kw_write, _kw_load, _kw_rates, _kw_res = write_latest, load_top_dps, best_rates, resolve_search
     _wrote = []
     _kw_h = globals()["HARVEST_URL"]
+    # ⚠️ collect_weapon 은 2026-09-05 부터 무기별 이력을 DB 에 남긴다 — DB 를 임시 파일로
+    # 갈아끼우지 않으면 이 테스트가 **실제 수집 데이터에 가짜 행을 쓴다**. 실제로 그렇게
+    # 됐다: id="i1"·DPS 1000·1디바인 행이 26번 들어가 활 곡선의 최전선을 통째로 평평하게
+    # 만들었다. 새 자동화가 디스크에 쓰기 시작하면 그 테스트의 격리부터 다시 볼 것.
+    _kw_db_dir = tempfile.mkdtemp(); _kw_db = DB; DB = os.path.join(_kw_db_dir, "w.db")
     try:
         globals()["HARVEST_URL"] = ""           # 크라우드 합류는 네트워크 — 자체 검증에선 끈다
         globals()["write_latest"] = lambda payload, path=None: _wrote.append(path)
@@ -2544,6 +2549,7 @@ def demo():
     finally:
         globals()["write_latest"], globals()["load_top_dps"] = _kw_write, _kw_load
         globals()["best_rates"], globals()["resolve_search"] = _kw_rates, _kw_res
+        DB = _kw_db; shutil.rmtree(_kw_db_dir, ignore_errors=True)
         globals()["HARVEST_URL"] = _kw_h
 
     # collect_loop(weapons=True): 한 사이클에 13종을 전부 돌고,
