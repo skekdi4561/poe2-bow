@@ -1,7 +1,7 @@
 <meta charset="utf-8">
 <title>공격 무기 시세 감정소</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="POE2 공격 무기(활·쇠뇌·검·도끼·창 등), 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 가격 곡선.">
+<meta name="description" content="POE2 공격 무기 7종(활·쇠뇌·한손 철퇴·양손 철퇴·창·육척봉·부적), 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 가격 곡선.">
 <link rel="icon" href="favicon.png">
 <meta property="og:type" content="website">
 <meta property="og:title" content="공격 무기 시세 감정소">
@@ -412,6 +412,11 @@ function dpsOf(b){
 // 아래는 스냅샷이 없을 때(직접 등록만 쓸 때)의 출발값일 뿐, 실제 값은 수집기가 채운다.
 const TRADE_CURRENCIES = ['exalted', 'chaos', 'divine', 'annul', 'mirror'];
 const RATE_DEFAULT = { exalted: 1, chaos: 65, divine: 300, annul: 279, mirror: 2000000 };
+// 미러만 절대값을 안 쓴다. 2,000,000 엑잘은 divine 이 300 엑잘이던 리그의 실측이라,
+// 리그가 바뀌면 그대로 틀린다(이 리그 divine 은 65.6 — 절대값을 쓰면 4.6배 부풀린다).
+// 미러는 시장에서 디바인의 배수로 매겨지고 디바인은 수집기가 매 사이클 실측하므로,
+// 디바인 기준 배수로 두면 리그가 바뀌어도 같이 따라간다.
+const MIRROR_IN_DIVINE = 6500;   // 2,000,000 ex / 300 ex(그 리그 divine)
 let rates = {};          // 사용자가 직접 고친 값 (항상 최우선)
 let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 값 { cur: {rate, n, lo, hi} }
 // 수집기가 "그 옵션을 검색 조건으로 걸어" 직접 재온 곡선들.
@@ -448,6 +453,7 @@ function rateOf(cur){
   if (cur in rates && okRate(rates[cur])) return rates[cur];   // 손으로 넣은 값이 이긴다(모양이 맞을 때만)
   const s = snapRates[cur];
   if (s && okRate(s.rate)) return s.rate;               // 그다음이 실제 거래소 시세
+  if (cur === 'mirror') return rateOf('divine') * MIRROR_IN_DIVINE;   // 디바인 기준(위 주석)
   return cur in RATE_DEFAULT ? RATE_DEFAULT[cur] : 0;   // 모르는 화폐는 0 → 환산 불가
 }
 // 근거를 밝힌다. 카카오 서버는 교환 시장이 얇고(엑잘↔디바인 3건) 사기 매물이 과반이라
@@ -677,6 +683,25 @@ const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'price', 'pmin', 'pmax', 'emi
   .every(k => r[k] === undefined || (typeof r[k] === 'number' && isFinite(r[k])));
 bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
 let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가 먼저 참조하므로 여기서 선언
+// 수집기(serve.py --collect --weapons)가 무기마다 latest.<접미사>.json 을 써둔다.
+// 활은 접미사 없이 latest.json (기존 파이프라인 그대로 — 수동 로드·채집기까지 합류).
+// 순서·접미사·표시명은 serve.py 의 ATTACK_WEAPONS 와 같아야 한다.
+const WEAPONS = [
+  { suffix: '',         label: '활' },
+  { suffix: 'crossbow', label: '쇠뇌' },
+  { suffix: 'onemace',  label: '한손 철퇴' },
+  { suffix: 'twomace',  label: '양손 철퇴' },
+  { suffix: 'spear',    label: '창' },
+  { suffix: 'warstaff', label: '육척봉' },
+  { suffix: 'talisman', label: '부적' },
+];
+const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
+// 화면 문구에 쓰는 "지금 보고 있는 무기" 이름. 예전엔 문구가 전부 활로 굳어 있어서
+// 창이나 부적을 보는 중에도 활 얘기를 읽게 됐다.
+function weaponLabel(){
+  return (WEAPONS.find(w => w.suffix === curWeapon) || WEAPONS[0]).label;
+}
+
 // 저장은 활 뷰에서만 — 다른 무기를 보는 중 save() 가 돌면 그 무기 스냅샷이 활 저장분을 덮어
 // 수동·채집 매물이 영구 소실된다(감사에서 재현). 호출부 셋을 여기 한 곳에서 막는다.
 function save(){ if (curWeapon !== '') return; try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
@@ -1107,8 +1132,8 @@ function render(){
 
   // 비어 보이는 이유를 정확히 말한다 — 데이터가 없는 것과 조건이 다 걸러낸 것은 다르다
   $('empty').textContent = !bows.length ? '아직 등록된 무기가 없습니다.'
-    : !base.length ? '지금 비교 기준으로는 DPS가 0인 활뿐입니다. 아래 “기준 설정”을 확인하세요.'
-    : '조건에 맞는 활이 없습니다. 문턱값을 낮춰보세요.';
+    : !base.length ? `지금 비교 기준으로는 DPS가 0인 ${weaponLabel()}뿐입니다. 아래 “기준 설정”을 확인하세요.`
+    : `조건에 맞는 ${weaponLabel()}이(가) 없습니다. 문턱값을 낮춰보세요.`;
   $('empty').style.display = view.length ? 'none' : '';
   $('rows').innerHTML = view.map(b => {
     const chips = Object.entries(b.offs).slice(0, 3)
@@ -1141,7 +1166,7 @@ function render(){
         <span class="sub num">DPS +${fmt(s.dd)} · ${money(s.dp)} 추가</span></span>
       <span class="cost num">${perDps(s.unit)}<small>DPS 10당</small></span>
     </li>`).join('')
-    : '<li><span class="step">최전선에 활이 2개 이상 있어야 계단이 나옵니다.</span></li>';
+    : `<li><span class="step">최전선에 ${esc(weaponLabel())}이(가) 2개 이상 있어야 계단이 나옵니다.</span></li>`;
 
   renderBudget(all);
   premium(f, baseFront, active, sel.length >= 2);
@@ -1239,9 +1264,9 @@ function premium(f, baseFront, active, thin, el = $('premium')){   // el: 자체
   // 서로 다른 점이 하나뿐이면 그건 "곡선"이 아니다 — 곡선인 척 말하지 않는다
   if (distinctPts(f) < 2) {
     el.innerHTML = abs <= 0.01
-      ? '조건에 맞는 활이 <strong>1개</strong>뿐이고, 그게 같은 DPS 최저가입니다. '
+      ? `조건에 맞는 ${esc(weaponLabel())}이(가) <strong>1개</strong>뿐이고, 그게 같은 DPS 최저가입니다. `
         + '다만 이 조건 때문에 더 싼 낮은 DPS 매물을 포기하고 있을 수 있으니 아래 표도 보세요.'
-      : `조건에 맞는 활이 <strong>1개</strong>뿐입니다 — 같은 DPS 최저가보다 `
+      : `조건에 맞는 ${esc(weaponLabel())}이(가) <strong>1개</strong>뿐입니다 — 같은 DPS 최저가보다 `
         + `<strong>+${money(abs)}</strong> 비쌉니다. 곡선을 그리려면 매물이 더 필요합니다.`;
     if (thin) el.innerHTML += THIN;
     return;
@@ -1255,7 +1280,7 @@ function premium(f, baseFront, active, thin, el = $('premium')){   // el: 자체
 
 const tickLabel = u => u === 0 ? '0' : fmt(u, decimalsFor(u));
 function chart(base, view, front, baseFront){
-  if (base.length < 2) { $('chart').innerHTML = '<div class="empty">활 2개 이상부터 곡선이 그려집니다.</div>'; $('legend').innerHTML = ''; return; }
+  if (base.length < 2) { $('chart').innerHTML = `<div class="empty">${esc(weaponLabel())} 2개 이상부터 곡선이 그려집니다.</div>`; $('legend').innerHTML = ''; return; }
   // R 은 오른쪽 끝 점(반지름 5)과 그 밑 눈금 글자가 잘리지 않을 만큼 둔다
   const W = 880, H = 420, L = 58, R = 34, T = 18, B = 40;
   const xs = base.map(b => b.d), ys = base.map(b => b.p).filter(p => p > 0);
@@ -1540,6 +1565,11 @@ $('trade-go').addEventListener('click', async () => {
     const kRm = rates, kSm = snapRates;
     rates = {}; snapRates = {};
     if (!(exPrice({ price: 7, cur: 'mirror' }) > 0)) throw new Error('미러가 0 으로 환산됨');
+    // 미러 환율은 디바인을 따라간다 — 절대값으로 굳으면 리그가 바뀔 때 통째로 틀린다
+    snapRates = { divine: { rate: 65.6 } };
+    if (Math.abs(rateOf('mirror') - 65.6 * MIRROR_IN_DIVINE) > 1) throw new Error('미러는 디바인 배수');
+    snapRates = {};
+    if (rateOf('mirror') !== RATE_DEFAULT.divine * MIRROR_IN_DIVINE) throw new Error('디바인도 모르면 기본 디바인 배수');
     if (exPrice({ price: 1, cur: '없는화폐' }) !== 0) throw new Error('모르는 화폐는 0 이어야');
     rates = kRm; snapRates = kSm;
 
@@ -1725,20 +1755,6 @@ $('trade-go').addEventListener('click', async () => {
 })();
 
 /* ---------- 미리 떠둔 스냅샷 ---------- */
-// 수집기(serve.py --collect --weapons)가 무기마다 latest.<접미사>.json 을 써둔다.
-// 활은 접미사 없이 latest.json (기존 파이프라인 그대로 — 수동 로드·채집기까지 합류).
-// 순서·접미사·표시명은 serve.py 의 ATTACK_WEAPONS 와 같아야 한다.
-const WEAPONS = [
-  { suffix: '',         label: '활' },
-  { suffix: 'crossbow', label: '쇠뇌' },
-  { suffix: 'onemace',  label: '한손 철퇴' },
-  { suffix: 'twomace',  label: '양손 철퇴' },
-  { suffix: 'spear',    label: '창' },
-  { suffix: 'warstaff', label: '육척봉' },
-  { suffix: 'talisman', label: '부적' },
-];
-const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
-
 (function weaponSelfTest(){
   try {
     if (weaponFile('') !== 'latest.json') throw new Error('weaponFile 활은 latest.json');
@@ -1749,6 +1765,15 @@ const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
     if (WEAPONS.some(w => ['wand', 'sceptre', 'staff'].includes(w.suffix))) throw new Error('WEAPONS 캐스터 포함');
     if (!WEAPONS.some(w => w.suffix === 'warstaff')) throw new Error('WEAPONS 육척봉 누락');
     if (!WEAPONS.some(w => w.suffix === 'talisman')) throw new Error('WEAPONS 부적 누락');
+    // 화면 문구가 지금 보는 무기를 따라가는가 — 굳어 있으면 창을 보며 "활이 없습니다" 를 읽는다
+    const kWL = curWeapon;
+    for (const w of WEAPONS) {
+      curWeapon = w.suffix;
+      if (weaponLabel() !== w.label) throw new Error('weaponLabel ' + (w.suffix || '(활)'));
+    }
+    curWeapon = '없는접미사';
+    if (weaponLabel() !== '활') throw new Error('weaponLabel 미지 접미사는 활로');
+    curWeapon = kWL;
   } catch (e) { console.error(e); $('fail').style.display = 'block'; }
 })();
 

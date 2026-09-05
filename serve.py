@@ -1410,6 +1410,11 @@ def _ex_rate(rates, cur):
         r = r.get("rate")
     if isinstance(r, (int, float)) and not isinstance(r, bool) and r > 0:
         return float(r)
+    # 미러만 절대값을 안 쓴다. 2,000,000 엑잘은 divine 이 300 엑잘이던 리그의 실측이라
+    # 리그가 바뀌면 그대로 틀린다(이 리그 divine 은 65.6 — 절대값이면 4.6배 부풀린다).
+    # 미러는 시장에서 디바인의 배수로 매겨지고 디바인은 매 사이클 실측하므로 배수로 둔다.
+    if cur == "mirror":
+        return _ex_rate(rates, "divine") * MIRROR_IN_DIVINE
     return float(DEFAULT_RATES.get(cur, 0.0))
 
 
@@ -2935,6 +2940,10 @@ def demo():
     assert _callsB == ["B1"], _callsB                 # 폐기가 아니라 진위 확인으로 갔다
     assert crowd_gate(1450, 300 * 300.0, [dict(d=1500, p=2e6, cur="mirror")], cur="divine") == "verify"
     assert crowd_gate(1450, 1.0, [dict(d=1500, p=2e6, cur="mirror")], cur="mirror") == "drop"   # 같은 화폐면 10배 판정
+    # 미러 환율은 절대값이 아니라 디바인 배수 — 리그가 바뀌면 절대값은 통째로 틀린다
+    assert _ex_rate({"divine": 65.6}, "mirror") == 65.6 * MIRROR_IN_DIVINE
+    assert _ex_rate({}, "mirror") == DEFAULT_RATES["divine"] * MIRROR_IN_DIVINE   # 디바인도 모르면 기본값 배수
+    assert _ex_rate({"mirror": {"rate": 7.0}}, "mirror") == 7.0                   # 실측이 있으면 실측이 이긴다
     # crowd_gate 경계 — 동점 지배 / 신뢰 관측 없음 / 같은 화폐 근방 없음 / cur=None
     _T = [dict(d=1500, p=100.0, cur="divine")]
     assert crowd_gate(1500, 100.0, _T) == "accept"   # DPS 동점·같은 값 = 지배당함(최전선 불변) — 검증 예산을 안 쓴다
@@ -3418,6 +3427,7 @@ def frontier_py(rows):
 # 페이지의 RATE_DEFAULT 와 같은 값 — 환율 수집이 실패한 스냅샷에서도 축척이 살아야 한다.
 # 실제 사고: 교환 API 가 막힌 시간의 수집분에 엑잘 환율만 실려, 디바인 매물 135개가
 # 판정에서 통째로 사라졌었다. 기본값 폴백은 페이지가 이미 쓰는 방식이다.
+MIRROR_IN_DIVINE = 6500.0   # 2,000,000 ex / 300 ex(그 리그 divine) — _ex_rate 주석 참고
 DEFAULT_RATES = {"exalted": 1.0, "chaos": 65.0, "divine": 300.0, "annul": 279.0,
                  "mirror": 2000000.0}   # index.html RATE_DEFAULT / appraiser.ts DEFAULT_RATES 와 같은 값
 

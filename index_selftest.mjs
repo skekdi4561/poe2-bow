@@ -32,6 +32,11 @@ function fakeEl() {
 }
 
 const errors = [];
+// 화면 문구가 다시 '활'로 굳는 것을 막는다 — 무기 7종이 같은 화면을 쓴다.
+// 이 문구들은 DOM 이 다 필요한 함수 안에 있어 sandbox 실행으로는 안 닿는다 → 원문으로 본다.
+for (const bad of ['조건에 맞는 활이', 'DPS가 0인 활뿐', '최전선에 활이', '활 2개 이상부터']) {
+  if (html.includes(bad)) errors.push(`무기 이름이 문구에 굳어 있음: ${bad}`);
+}
 const documentStub = {
   getElementById: () => fakeEl(),
   createElement: () => fakeEl(),
