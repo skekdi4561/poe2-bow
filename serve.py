@@ -1215,6 +1215,13 @@ def db():
         con.execute("ALTER TABLE bows ADD COLUMN cond TEXT")
     if "id" not in {r[1] for r in con.execute("PRAGMA table_info(bows)")}:
         con.execute("ALTER TABLE bows ADD COLUMN id TEXT")   # 거래소 매물 id — 합집합 중복 제거용
+    if "league" not in cols:
+        # 리그(2026-09-06). NULL = 이 칸이 생기기 전 = 지금 리그(리그가 바뀔 때 DB 를 옮겨
+        # 시작하는 운영이었다). 앞으로는 모든 행에 리그가 찍히므로 다음 리그 경계는 DB 를
+        # 안 옮겨도 저절로 갈린다. 안 가르면 지난 리그 이력이 이번 리그를 오염시킨다 —
+        # 실사고: 지난 리그 divine 300 이 환율 기억에 남아 이번 리그 65.6 을 "3배 밖"으로
+        # 하루 종일 거부했다(사용자가 DB 를 손으로 옮겨서야 풀렸다).
+        con.execute("ALTER TABLE snapshots ADD COLUMN league TEXT")
     if "category" not in cols:
         # 무기 구분(2026-09-05). NULL = 활 — 예전 스냅샷이 전부 활이라 이관이 필요 없다.
         # 이 칸이 생기기 전에는 활만 DB 에 쌓여서 다른 무기는 추세를 그릴 재료가 없었다.
@@ -1475,7 +1482,18 @@ def write_latest(payload, path=None):
 TREND_ANCHORS = ["top"]
 
 
-def build_trend(hours=72, anchors=None, con=None, category=None):
+def _league_sql(league, alias="s."):
+    """리그를 주면 "그 리그 + 리그가 안 찍힌 옛 행" 으로 좁히는 WHERE 조각."""
+    if not league:
+        return ""
+    return " AND (%(a)sleague IS NULL OR %(a)sleague = ?)" % {"a": alias}
+
+
+def _league_args(league):
+    return (_norm_league(league),) if league else ()
+
+
+def build_trend(hours=72, anchors=None, con=None, category=None, league=None):
     """최근 N시간 스냅샷마다 앵커 DPS 의 최저가(엑잘 환산)를 뽑아 시계열을 만든다.
 
     이미 snapshots.db 에 쌓인 이력을 쓰는 것 — 새 데이터 소스 0. 각 스냅샷은 자기
@@ -1493,10 +1511,12 @@ def build_trend(hours=72, anchors=None, con=None, category=None):
     if con is None:
         con = db(); close = True
     try:
+        # 리그를 주면 그 리그만. NULL 은 리그 칸이 생기기 전의 행이라 지금 리그로 본다.
         snaps = con.execute(
             "SELECT id, taken_at, rates FROM snapshots"
-            " WHERE taken_at >= ? AND category IS ? ORDER BY taken_at ASC",
-            (cut, category)).fetchall()
+            " WHERE taken_at >= ? AND category IS ?" + _league_sql(league, "") +
+            " ORDER BY taken_at ASC",
+            (cut, category) + _league_args(league)).fetchall()
         points = []
         for sid, taken, rates_json in snaps:
             try:
@@ -1538,7 +1558,7 @@ def build_trend(hours=72, anchors=None, con=None, category=None):
             con.close()
 
 
-def recent_rows(hours=24):
+def recent_rows(hours=24, league=None):
     """최근 N시간 스냅샷의 합집합. 같은 매물(id)은 가장 최근 관측만 남긴다.
 
     스냅샷 한 장은 밴드당 최저가 표본이라 얇다(실측 ~160개). 시간마다 수집하면
@@ -1557,8 +1577,8 @@ def recent_rows(hours=24):
             "SELECT b.id, b.snapshot_id, s.taken_at, b.name, b.pdps, b.edps, b.aps, b.crit,"
             " b.price, b.cur, b.rarity, b.mods, b.cond FROM bows b"
             " JOIN snapshots s ON s.id = b.snapshot_id"
-            " WHERE s.taken_at >= ? AND s.category IS NULL"
-            " ORDER BY s.taken_at DESC, b.rowid ASC", (cut,)).fetchall()
+            " WHERE s.taken_at >= ? AND s.category IS NULL" + _league_sql(league) +
+            " ORDER BY s.taken_at DESC, b.rowid ASC", (cut,) + _league_args(league)).fetchall()
     out, seen, fps = [], set(), set()
     for lid, sid, taken, name, pdps, edps, aps, crit, price, cur, rarity, mods, cond in rows:
         # 중복 판정은 조건 그룹 안에서만 한다 — 같은 매물이 기준 검색과 조건 검색 양쪽에서
@@ -1584,7 +1604,7 @@ def recent_rows(hours=24):
     return out
 
 
-def rate_memory(hours=48):
+def rate_memory(hours=48, league=None):
     """DB 최근 스냅샷들에서 화폐별 환율 기억을 만든다 — 최근 관측 최대 3개의 중앙값.
 
     직전 한 장만 이어 쓰면 독버섯이 그대로 상속된다(실제 사고: 17:04 수집이 "디바인 10엑잘"
@@ -1596,7 +1616,7 @@ def rate_memory(hours=48):
         with db() as con:
             for (raw,) in con.execute(
                     "SELECT rates FROM snapshots WHERE taken_at >= ? AND category IS NULL"
-                    " ORDER BY id DESC", (cut,)):
+                    + _league_sql(league, "") + " ORDER BY id DESC", (cut,) + _league_args(league)):
                 for c, v in (json.loads(raw or "{}")).items():
                     # 기억은 "받아들여진 값"으로만 만든다 — 거부된 관측(obs)을 섞으면
                     # 상주 사기가 기억을 점령한다(실사고 #15~17). 소급 정정된 행도 rate 를 쓴다.
@@ -1661,7 +1681,7 @@ def collect(url):
               % (q0.get("status"),))
         print("     !! 사이트 문구와 어긋납니다 — 검색 필터를 확인하세요.")
     rates = best_rates(base, league, TRADE_CURRENCIES)
-    rates = guard_rates(rates, rate_memory())
+    rates = guard_rates(rates, rate_memory(league=league))
 
     bows, total, skipped, base, league = load_top_dps(url)
 
@@ -1671,8 +1691,10 @@ def collect(url):
     conds = []
     with db() as con:
         sid = con.execute(
-            "INSERT INTO snapshots(taken_at, source_url, total, kept, rates) VALUES (?,?,?,?,?)",
-            (taken, url, total, len(bows), json.dumps(rates, ensure_ascii=False))).lastrowid
+            "INSERT INTO snapshots(taken_at, source_url, total, kept, rates, league)"
+            " VALUES (?,?,?,?,?,?)",
+            (taken, url, total, len(bows), json.dumps(rates, ensure_ascii=False),
+             _norm_league(league))).lastrowid
         con.executemany(
             "INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,mods,cond,id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1680,7 +1702,7 @@ def collect(url):
               b["price"], b["cur"], b["rarity"], json.dumps(b["mods"], ensure_ascii=False),
               b.get("cond"), b.get("id")) for b in bows])
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
-    merged = recent_rows()
+    merged = recent_rows(league=league)
     try:
         # merge_harvest 는 받은 리스트에 제자리 append 하므로 예외가 나도 그때까지의 합류분이 남는다
         merge_harvest(
@@ -1697,7 +1719,7 @@ def collect(url):
         print("     활 수집 0개 · 24시간 합집합 0개 — 파일을 갱신하지 않는다(지난 데이터 보존)")
         return 0
     try:
-        trend = build_trend()
+        trend = build_trend(league=league)
     except Exception as e:                       # 추세는 부가정보 — 실패해도 수집은 나간다
         print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e)); trend = None
     write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
@@ -1739,7 +1761,7 @@ def collect_weapon(url, cat_id, suffix):
     중·하위 구간은 크라우드가 채워야 곡선이 완성된다. 환율은 무기 무관이라 그대로 공유한다."""
     taken = int(time.time() * 1000)
     base, league_path0, league, q0 = resolve_search(url)
-    rates = guard_rates(best_rates(base, league, TRADE_CURRENCIES), rate_memory())
+    rates = guard_rates(best_rates(base, league, TRADE_CURRENCIES), rate_memory(league=league))
     rows, total, skipped, base, league = load_top_dps(url, category=cat_id)
     conds = []                                   # 조건 곡선 제거 — collect() 주석 참고
     rows = dedup_by_cond_id(rows)                 # 활 merge_harvest 의 (cond,id) 접기와 정합
@@ -1768,10 +1790,10 @@ def collect_weapon(url, cat_id, suffix):
     trusted = [r for r in rows if r.get("src") != "user"]
     with db() as con:
         sid = con.execute(
-            "INSERT INTO snapshots(taken_at, source_url, total, kept, rates, category)"
-            " VALUES (?,?,?,?,?,?)",
+            "INSERT INTO snapshots(taken_at, source_url, total, kept, rates, category, league)"
+            " VALUES (?,?,?,?,?,?,?)",
             (taken, url, total, len(trusted), json.dumps(rates, ensure_ascii=False),
-             cat_id)).lastrowid
+             cat_id, _norm_league(league))).lastrowid
         con.executemany(
             "INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,mods,cond,id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1781,7 +1803,7 @@ def collect_weapon(url, cat_id, suffix):
     # 추세는 쓰기 트랜잭션 밖에서 — 안에서 던지면 방금 넣은 스냅샷까지 롤백된다.
     # 활 경로와 같이 "부가정보라 실패해도 수집은 나간다"로 감싼다.
     try:
-        trend = build_trend(con=con, category=cat_id)
+        trend = build_trend(con=con, category=cat_id, league=league)
     except Exception as e:
         print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e))
         trend = None
@@ -3146,6 +3168,36 @@ def demo():
     # 정확히 3배 경계는 통과(거부는 미만/초과만) — 400*3=1200, 400/3≈133.3
     assert guard_rates({"divine": {"rate": 1200}}, {"divine": 400.0})["divine"]["rate"] == 1200
     assert guard_rates({"divine": {"rate": 400 / 3.0}}, {"divine": 400.0})["divine"]["rate"] == 400 / 3.0
+
+    # 리그 경계: 지난 리그 이력이 이번 리그 환율 기억·추세·24시간 합집합에 새면 안 된다.
+    # 실사고: 지난 리그 divine 300 이 기억에 남아 이번 리그 65.6 을 하루 종일 "3배 밖"으로 거부했다.
+    _kdL = DB; _dL = tempfile.mkdtemp(); DB = os.path.join(_dL, "l.db")
+    try:
+        _nowL = int(time.time() * 1000)
+        with db() as _cL:
+            for _lg, _rt in (("old league", 300.0), ("new league", 65.6)):
+                _sL = _cL.execute(
+                    "INSERT INTO snapshots(taken_at,source_url,rates,league) VALUES (?,?,?,?)",
+                    (_nowL, "u", json.dumps({"divine": {"rate": _rt}}), _lg)).lastrowid
+                _cL.execute("INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,"
+                            "rarity,mods,id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (_sL, _lg, 500.0, 0.0, 1.0, 5.0, _rt, "exalted", "Rare", "[]", "i-" + _lg))
+        assert rate_memory(league="new league")["divine"] == 65.6, rate_memory(league="new league")
+        assert rate_memory(league="old league")["divine"] == 300.0
+        assert rate_memory()["divine"] == 300.0   # 리그를 안 주면 섞인다 — 지난 리그 값이 이긴다
+        _nmL = [r["name"] for r in recent_rows(league="new league")]
+        assert _nmL == ["new league"], _nmL              # 24시간 합집합도 리그를 가른다
+        # 리그가 안 찍힌 옛 행(NULL)은 지금 리그로 본다 — 칸이 생기기 전 데이터를 버리지 않는다
+        with db() as _cL:
+            _sN = _cL.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                              (_nowL, "u", json.dumps({"chaos": {"rate": 2.5}}))).lastrowid
+            _cL.execute("INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,"
+                        "rarity,mods,id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (_sN, "리그없음", 400.0, 0.0, 1.0, 5.0, 3.0, "exalted", "Rare", "[]", "i-null"))
+        assert rate_memory(league="new league").get("chaos") == 2.5
+        assert "리그없음" in [r["name"] for r in recent_rows(league="new league")]
+    finally:
+        DB = _kdL; shutil.rmtree(_dL, ignore_errors=True)
 
     # rate_memory: 독버섯이 낀 이력에서 중앙값이 진짜 값을 살려내는지 (임시 DB)
     keep_db3 = DB
