@@ -1584,6 +1584,12 @@ def rate_memory(hours=48):
                     # 기억은 "받아들여진 값"으로만 만든다 — 거부된 관측(obs)을 섞으면
                     # 상주 사기가 기억을 점령한다(실사고 #15~17). 소급 정정된 행도 rate 를 쓴다.
                     r = (v.get("rate") if isinstance(v, dict) else v) or 0
+                    # 매물 한 건만 보고 잡은 값은 기억으로 삼지 않는다. 2026-09-05 실사고:
+                    # 리그 첫날 "소멸 1엑잘" 매물 **1건**(direct=1)이 기억이 됐고, 그 뒤 진짜
+                    # 시세 3.67→5.04 가 매 사이클 "3배 밖"으로 거부돼 하루 종일 1.0 이 나갔다.
+                    # 미끼를 잡으라고 만든 가드가 미끼를 지키는 역전이었다.
+                    if isinstance(v, dict) and v.get("direct") == 1:
+                        continue
                     if isinstance(r, (int, float)) and r >= 1 and len(seen.setdefault(c, [])) < 3:
                         seen[c].append(r)
     except Exception:
@@ -1603,6 +1609,12 @@ def guard_rates(measured, memory):
         r = (got.get("rate") if isinstance(got, dict) else got) if got else None
         if r is None:
             out[c] = {"rate": m, "how": "이전 수집분"}
+        elif (got.get("how") if isinstance(got, dict) else None) == "poe.ninja":
+            # poe.ninja 는 거래량 기반 집계라 "매물 1건짜리 호가"라는 실패 양식이 없다.
+            # 이 가드가 막으려던 실사고(디바인 10엑잘 미끼·소멸 5000엑잘)는 전부 거래소 교환
+            # 폴백에서 나왔다. 그쪽만 막고 여기는 통과시켜야 기억이 시세를 따라간다 —
+            # 안 그러면 한 번 어긋난 기억이 영구 고착된다(2026-09-05 실측: 소멸 하루 종일 1.0).
+            pass
         elif r < m / 3.0 or r > m * 3.0:
             # 아래쪽 = "싸게 파는 척" 미끼(실사고: 디바인 10엑잘), 위쪽 = 매물 1건짜리
             # 바가지 호가(실사고: 소멸 5000엑잘). 거부해도 관측값(obs)은 기억에 안 남긴다 —
@@ -3036,6 +3048,29 @@ def demo():
     # 첫 수집(기억 없음)은 관측을 그대로 통과 — 비교 대상이 없으니 거부하면 안 된다
     _g6 = guard_rates({"divine": {"rate": 350}}, {})
     assert _g6["divine"]["rate"] == 350, _g6
+    # 2026-09-05 실사고: 리그 첫날 "소멸 1엑잘" 매물 1건이 기억이 되어 진짜 시세(3.67→5.04)를
+    # 하루 종일 거부했다. poe.ninja 는 거래량 기반이라 "매물 1건짜리 호가" 실패 양식이 없으므로
+    # 급변 가드를 건너뛴다 — 이게 없으면 한 번 어긋난 기억이 영구 고착된다.
+    _g7 = guard_rates({"annul": {"rate": 5.04, "how": "poe.ninja"}}, {"annul": 1.0})
+    assert _g7["annul"]["rate"] == 5.04, _g7            # 자가복구: 기억의 5배여도 통과
+    # 그래도 교환 폴백(매물 1~6건)의 독버섯은 그대로 막아야 한다 — _g5 와 같은 상황에 how 만 다름
+    _g8 = guard_rates({"annul": {"rate": 5000, "how": "직접"}}, {"annul": 150.0})
+    assert _g8["annul"]["rate"] == 150, _g8
+    # 씨앗 차단: 매물 한 건(direct=1)만 보고 잡은 값은 기억으로 삼지 않는다
+    _d9 = tempfile.mkdtemp(); _kd9 = DB; DB = os.path.join(_d9, "r.db")
+    try:
+        with db() as _c9:
+            _c9.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                        (int(time.time() * 1000), "u",
+                         json.dumps({"annul": {"rate": 1.0, "how": "직접", "direct": 1}})))
+        assert "annul" not in rate_memory(), rate_memory()
+        with db() as _c9:
+            _c9.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
+                        (int(time.time() * 1000), "u",
+                         json.dumps({"annul": {"rate": 5.0, "how": "poe.ninja", "direct": 9}})))
+        assert rate_memory().get("annul") == 5.0, rate_memory()
+    finally:
+        DB = _kd9; shutil.rmtree(_d9, ignore_errors=True)
     # 정확히 3배 경계는 통과(거부는 미만/초과만) — 400*3=1200, 400/3≈133.3
     assert guard_rates({"divine": {"rate": 1200}}, {"divine": 400.0})["divine"]["rate"] == 1200
     assert guard_rates({"divine": {"rate": 400 / 3.0}}, {"divine": 400.0})["divine"]["rate"] == 400 / 3.0
