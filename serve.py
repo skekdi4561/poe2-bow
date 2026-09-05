@@ -926,6 +926,16 @@ def with_category(query, cat_id):
     return q
 
 
+def _cut_index(n):
+    """하한으로 쓸 위치(오름차순 인덱스). 표본이 5개 이상이면 최소 한 줄은 버린다 —
+    최소값 그대로 쓰면 이상치 하나가 문턱 전체를 끌어내린다(probe 하한 주석 참고)."""
+    if n <= 0:
+        return 0
+    if n < 5:
+        return 0                      # 표본이 너무 작으면 버릴 여유가 없다
+    return min(n - 1, max(1, n // 20))
+
+
 def probe_levels(cut, n=None, floor=None, shape=None):
     """상위 100개의 DPS 하한(cut) 아래에 문턱을 n 개 놓는다 — 위쪽이 촘촘하게.
 
@@ -1037,7 +1047,16 @@ def load_top_dps(page_url, category=None):
           % (how, total, len(rows), best,
              "" if not skipped else " (제외 %d)" % skipped))
     # 문턱은 이번 사이클 상위 100개의 DPS 하한에서 유도한다 — 시장이 커지든 작아지든 따라간다.
-    _cut = min((x["pdps"] + x["edps"] for x in rows), default=0)
+    # 단순 최소값을 쓰면 **한 줄이 문턱 전체를 망친다**: 거래소는 DPS 정렬에 카오스 피해를
+    # 넣는데 우리는 안 센다(활 빌드가 안 써서 의도적으로 뺐다). 그래서 카오스 무기가 거래소
+    # 기준으로는 100위 안에 들어와도 우리 계산으로는 바닥값이 된다.
+    # 실측(2026-09-06 육척봉): #1~#99 가 1166~688 인데 카오스 피해 286~473 이 붙은 #100 만
+    # 138 이라 문턱이 [124,111,97,80,62] 로 잡혔고 탐침 다섯 단계가 전부 0개였다. 탐침이
+    # 죽으니 표본이 100개로 얇아지고, 그러면 크라우드 행 대부분이 "최전선을 바꾸는 행"이 되어
+    # 검증 예산(3)을 넘겨 탈락했다(그 사이클 진위 미확인 676개 — 다른 무기는 12~191개).
+    # 하위 5% 를 버린 분위수로 바꾼다. 카오스 매물 몇 개가 섞여도 문턱이 안 무너진다.
+    _dps_sorted = sorted(x["pdps"] + x["edps"] for x in rows)
+    _cut = _dps_sorted[_cut_index(len(_dps_sorted))] if _dps_sorted else 0
     _levels = probe_levels(_cut)
     if _levels:
         print("     탐침 문턱(상위 %d개 하한 %.0f 기준): %s" % (len(rows), _cut, _levels))
@@ -3215,6 +3234,15 @@ def demo():
     # 정확히 3배 경계는 통과(거부는 미만/초과만) — 400*3=1200, 400/3≈133.3
     assert guard_rates({"divine": {"rate": 1200}}, {"divine": 400.0})["divine"]["rate"] == 1200
     assert guard_rates({"divine": {"rate": 400 / 3.0}}, {"divine": 400.0})["divine"]["rate"] == 400 / 3.0
+
+    # 탐침 하한은 이상치 한 줄에 무너지면 안 된다 — 거래소 DPS 정렬은 카오스를 세고 우리는 안 센다
+    assert _cut_index(100) == 5 and _cut_index(20) == 1 and _cut_index(5) == 1
+    assert _cut_index(4) == 0 and _cut_index(1) == 0 and _cut_index(0) == 0
+    _real = sorted([1165.5, 1055.6, 1048.9] + [700.0 + i for i in range(96)] + [138.3])
+    assert _real[0] == 138.3                                   # 최소값은 카오스 매물
+    assert _real[_cut_index(len(_real))] >= 688, _real[_cut_index(len(_real))]
+    assert probe_levels(_real[_cut_index(len(_real))])[0] > 600  # 문턱이 실제 시장 안에 놓인다
+    assert probe_levels(138)[0] < 130                           # 옛 방식이면 시장 밖으로 나간다
 
     # 이력 정리: 읽는 창 밖은 지우되 창 안은 절대 안 건드린다(지우면 추세·합집합이 빈다)
     _kdP = DB; _dP = tempfile.mkdtemp(); DB = os.path.join(_dP, "p.db")
