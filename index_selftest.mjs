@@ -54,6 +54,13 @@ const sandbox = {
   Image: function(){ return fakeEl(); },
   console: { log: () => {}, warn: () => {}, info: () => {}, error: (...a) => errors.push(a.map(String).join(' ')) },
 };
+// 재방문자를 흉내낸다 — 저장된 매물이 있어야 부팅 첫 줄의 filter 콜백이 실제로 돈다.
+// 빈 localStorage 로만 돌리면 부팅 순서 결함(선언 전 호출 등)이 통째로 안 잡힌다:
+// numOk 를 쓰는 줄이 선언보다 위에 있어 재방문자 화면이 통째로 죽던 것을 이 검사가 못 잡았다.
+sandbox.localStorage._s['poe2bows'] = JSON.stringify([
+  { id: 'seed1', pdps: 100, edps: 0, aps: 1.2, crit: 5, price: 1, cur: 'exalted',
+    rarity: 'Rare', mods: [], t: Date.now() },
+]);
 sandbox.self = sandbox; sandbox.globalThis = sandbox;
 
 try {

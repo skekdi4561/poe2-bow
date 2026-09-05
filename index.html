@@ -668,12 +668,15 @@ function parseItem(text){
 /* ---------- 상태 ---------- */
 const $ = id => document.getElementById(id);
 let bows = [];
-bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
-let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가 먼저 참조하므로 여기서 선언
+// numOk 는 바로 아래 줄에서 쓰이므로 반드시 그 위에 선언해야 한다 — const 는 호이스팅돼도
+// 초기화 전(TDZ)에는 못 부른다. 아래에 두었더니 저장된 매물이 있는 **재방문자만** 부팅 첫 줄에서
+// ReferenceError 로 스크립트가 통째로 죽어 빈 화면이 됐다(첫 방문자는 배열이 비어 콜백이 안 돌아 멀쩡).
 // 있는 값은 숫자여야 한다 — 문자열 pdps 는 pdps+edps 가 문자열 연결이 되어 DPS 가 폭증한다. 없는 값은 허용
 // (수동 등록 행은 pdps 대신 pmin/pmax 를 갖는다). 없는 값의 표시는 fmt 가 던지지 않게 맡는다.
 const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'price', 'pmin', 'pmax', 'emin', 'emax']
   .every(k => r[k] === undefined || (typeof r[k] === 'number' && isFinite(r[k])));
+bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
+let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가 먼저 참조하므로 여기서 선언
 // 저장은 활 뷰에서만 — 다른 무기를 보는 중 save() 가 돌면 그 무기 스냅샷이 활 저장분을 덮어
 // 수동·채집 매물이 영구 소실된다(감사에서 재현). 호출부 셋을 여기 한 곳에서 막는다.
 function save(){ if (curWeapon !== '') return; try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
