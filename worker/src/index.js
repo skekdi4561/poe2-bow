@@ -11,7 +11,7 @@ const CORS = {
 // 미러는 시장 최상위 매물이 몰려 있어 받는다(serve.py PRICE_CURRENCIES 와 같은 목록).
 // 빼면 최상위 무기가 크라우드에서 통째로 사라진다.
 const CURRENCIES = new Set(["exalted", "chaos", "divine", "annul", "mirror"]);
-// 수집 대상 무기(캐스터 제외·POE2 에 실제 있는 6종, serve.py ATTACK_WEAPONS 와 같은 목록).
+// 수집 대상 무기(캐스터 제외·POE2 에 실제 있는 7종, serve.py ATTACK_WEAPONS 와 같은 목록).
 // row JSON 안에 담으므로 D1 스키마 변경이 없다. 값이 없는 옛 행은 수집기가 활로 본다.
 const CATEGORIES = new Set([
   "weapon.bow",
@@ -20,6 +20,7 @@ const CATEGORIES = new Set([
   "weapon.twomace",
   "weapon.spear",
   "weapon.warstaff",
+  "weapon.talisman",
 ]);
 const RARITIES = new Set(["Normal", "Magic", "Rare", "Unique", ""]);
 

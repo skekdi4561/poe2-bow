@@ -870,6 +870,10 @@ def resolve_search(page_url):
 # 정확히 일치했다 — 베이스 29개 이상인 무기만 시장에 매물이 있고(전부 10000+),
 # 베이스가 13개로 균일한 무기는 예외 없이 0건이었다(검·도끼·단검·플레일, 클로는 베이스 0).
 # POE2 는 아직 그 무기들을 출시하지 않았다(정식 출시/후속 업데이트 예정).
+# 부적(2026-09-05 추가): 베이스 28개로 위 기준(29 이상/13 균일)의 사각지대에 떨어져 한동안
+# 어느 목록에도 없었다. 게임 데이터의 무기 전용 룬(물리 피해·공격 속도·정확도)이 걸리는
+# 대상 집합이 마셜 무기 14종이고 부적이 그 안에 있어 공격 무기가 맞다(EE2 도 WEAPON_TWO_HANDED_MELEE
+# 로 분류하고 거래 id 가 weapon.talisman 이다).
 ATTACK_WEAPONS = [
     ("weapon.bow",       "",         "활"),          # 베이스 32, 최고 1534 DPS
     ("weapon.crossbow",  "crossbow", "쇠뇌"),        # 베이스 29, 최고 1723
@@ -877,6 +881,7 @@ ATTACK_WEAPONS = [
     ("weapon.twomace",   "twomace",  "양손 철퇴"),   # 베이스 41, 최고 1798
     ("weapon.spear",     "spear",    "창"),          # 베이스 36, 최고 1294
     ("weapon.warstaff",  "warstaff", "육척봉"),  # 베이스 36, 최고 2025
+    ("weapon.talisman",  "talisman", "부적"),     # 베이스 28
 ]
 # POE2 에 아직 없는 공격 무기 — 출시되면 위 목록으로 옮기면 그대로 수집된다.
 # (id 는 EE2 CATEGORY_TO_TRADE_ID 확인분이라 그대로 쓰면 된다)

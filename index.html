@@ -1732,6 +1732,7 @@ const WEAPONS = [
   { suffix: 'twomace',  label: '양손 철퇴' },
   { suffix: 'spear',    label: '창' },
   { suffix: 'warstaff', label: '육척봉' },
+  { suffix: 'talisman', label: '부적' },
 ];
 const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
 
@@ -1743,7 +1744,8 @@ const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
     if (new Set(WEAPONS.map(w => w.suffix)).size !== WEAPONS.length) throw new Error('WEAPONS 접미사 중복');
     // 캐스터(정확히 wand/sceptre/staff)는 제외 — warstaff 는 공격무기라 포함돼야 한다
     if (WEAPONS.some(w => ['wand', 'sceptre', 'staff'].includes(w.suffix))) throw new Error('WEAPONS 캐스터 포함');
-    if (!WEAPONS.some(w => w.suffix === 'warstaff')) throw new Error('WEAPONS 쿼터스태프 누락');
+    if (!WEAPONS.some(w => w.suffix === 'warstaff')) throw new Error('WEAPONS 육척봉 누락');
+    if (!WEAPONS.some(w => w.suffix === 'talisman')) throw new Error('WEAPONS 부적 누락');
   } catch (e) { console.error(e); $('fail').style.display = 'block'; }
 })();
 
