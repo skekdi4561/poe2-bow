@@ -1663,12 +1663,17 @@ def collect(url):
               b["price"], b["cur"], b["rarity"], json.dumps(b["mods"], ensure_ascii=False),
               b.get("cond"), b.get("id")) for b in bows])
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
-    merged = merge_harvest(
-        recent_rows(),
-        verifier=make_harvest_verifier(base, league_path0, q0),
-        league=league,                       # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
-        category="weapon.bow",               # 활 곡선에는 활 매물만
-        rates=rates)                         # 신뢰 관측과 크라우드 행을 엑잘로 환산해 견준다
+    merged = recent_rows()
+    try:
+        # merge_harvest 는 받은 리스트에 제자리 append 하므로 예외가 나도 그때까지의 합류분이 남는다
+        merge_harvest(
+            merged,
+            verifier=make_harvest_verifier(base, league_path0, q0),
+            league=league,                   # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
+            category="weapon.bow",           # 활 곡선에는 활 매물만
+            rates=rates)                     # 신뢰 관측과 크라우드 행을 엑잘로 환산해 견준다
+    except Exception as e:                   # 크라우드는 부가정보 — 실패해도 수집은 나간다
+        print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
     if not merged:
         # 빈 결과로 파일을 덮지 않는다(collect_weapon 과 같은 가드). 이번 수집이 0개여도
         # 24h 합집합이 있으면 그걸 싣고, 그것마저 비면 지난 파일을 보존한다.
@@ -1711,7 +1716,8 @@ def dedup_by_cond_id(rows):
 def collect_weapon(url, cat_id, suffix):
     """비-활 공격무기 한 종의 현재 시세를 떠서 latest.<suffix>.json 에 쓴다.
 
-    24h 합집합(bows 테이블)과 추세는 아직 활 전용이라 안 붙인다. 다만 **크라우드는 붙인다** —
+    24h 합집합(bows 테이블)은 아직 활 전용이라 안 쓴다. 이력과 추세는 무기별로 남긴다.
+    다만 **크라우드는 붙인다** —
     merge_harvest 가 이제 무기별로 걸러주므로 섞일 위험이 없고, 수집기가 TOP100 만 뜨는 만큼
     중·하위 구간은 크라우드가 채워야 곡선이 완성된다. 환율은 무기 무관이라 그대로 공유한다."""
     taken = int(time.time() * 1000)
@@ -1738,19 +1744,30 @@ def collect_weapon(url, cat_id, suffix):
     # 이 무기 이력을 남긴다 — 추세("TOP100 진입 최저가")를 그릴 재료다. 2026-09-05 전에는
     # 활만 DB 에 쌓여서 다른 무기 곡선에는 추세 칸이 아예 안 떴다. 곡선 자체는 예전처럼
     # 이번 수집분만 쓴다(활의 24시간 합집합은 활 전용 — 여기서 흉내 내지 않는다).
+    # DB 에는 **수집기 자신의 관측만** 남긴다. 크라우드 행(src="user")은 곡선·파일에는 싣되
+    # 이력에는 안 넣는다 — 넣으면 미검증 행이 수집기 관측인 것처럼 영구 저장되고(저장 시
+    # src 표시가 사라져 나중에 구분할 방법이 없다) 바로 아래 추세가 그걸 재료로 삼는다.
+    # 활 경로(collect)는 이미 "저장 먼저, 합류 나중" 순서라 같은 문제가 없다.
+    trusted = [r for r in rows if r.get("src") != "user"]
     with db() as con:
         sid = con.execute(
             "INSERT INTO snapshots(taken_at, source_url, total, kept, rates, category)"
             " VALUES (?,?,?,?,?,?)",
-            (taken, url, total, len(rows), json.dumps(rates, ensure_ascii=False),
+            (taken, url, total, len(trusted), json.dumps(rates, ensure_ascii=False),
              cat_id)).lastrowid
         con.executemany(
             "INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,rarity,mods,cond,id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [(sid, r["name"], r["pdps"], r["edps"], r["aps"], r["crit"],
               r["price"], r["cur"], r["rarity"], json.dumps(r["mods"], ensure_ascii=False),
-              r.get("cond"), r.get("id")) for r in rows])
+              r.get("cond"), r.get("id")) for r in trusted])
+    # 추세는 쓰기 트랜잭션 밖에서 — 안에서 던지면 방금 넣은 스냅샷까지 롤백된다.
+    # 활 경로와 같이 "부가정보라 실패해도 수집은 나간다"로 감싼다.
+    try:
         trend = build_trend(con=con, category=cat_id)
+    except Exception as e:
+        print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e))
+        trend = None
     out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
                   "rates": rates, "conds": conds, "bows": rows, "trend": trend,
@@ -2623,6 +2640,25 @@ def demo():
         assert collect_weapon("u", "weapon.spear", "spear") == 1
         assert _payloads[-1].get("league") == "Runes of Aldur", _payloads[-1].get("league")   # 키 없음/인코딩 그대로면 실패
         assert _payloads[-1]["category"] == "weapon.spear"
+        # 크라우드 행은 곡선·파일에는 싣되 DB(이력)에는 안 넣는다 — 넣으면 미검증 행이
+        # 수집기 관측인 것처럼 영구 저장되고 추세가 그걸 재료로 삼는다.
+        _d10 = tempfile.mkdtemp(); _kd10 = DB; DB = os.path.join(_d10, "w.db")
+        try:
+            globals()["load_top_dps"] = lambda u, category=None: (
+                [{"name": "mine", "pdps": 500.0, "edps": 0.0, "aps": 1.4, "crit": 6.0,
+                  "price": 9, "cur": "exalted", "rarity": "Rare", "mods": [], "id": "T1"},
+                 {"name": "theirs", "pdps": 400.0, "edps": 0.0, "aps": 1.4, "crit": 6.0,
+                  "price": 3, "cur": "exalted", "rarity": "Rare", "mods": [], "id": "U1",
+                  "src": "user"}],
+                2, 0, "https://h", "L")
+            assert collect_weapon("u", "weapon.spear", "spear") == 2   # 파일에는 둘 다
+            with db() as _c10:
+                _ids = [r[0] for r in _c10.execute("SELECT id FROM bows")]
+                _kept = _c10.execute("SELECT kept FROM snapshots").fetchone()[0]
+            assert _ids == ["T1"], _ids           # DB 에는 수집기 관측만
+            assert _kept == 1, _kept              # kept 도 신뢰 관측 수
+        finally:
+            DB = _kd10; shutil.rmtree(_d10, ignore_errors=True)
     finally:
         globals()["write_latest"], globals()["load_top_dps"] = _kw_write, _kw_load
         globals()["best_rates"], globals()["resolve_search"] = _kw_rates, _kw_res
