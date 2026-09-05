@@ -138,11 +138,25 @@ export default {
 
     if (req.method === "GET" && url.pathname === "/recent") {
       const cut = Date.now() - 24 * 3600 * 1000;
-      const { results } = await env.DB.prepare(
-        "SELECT t, fee, row FROM harvest WHERE t >= ?1 AND fee IS NOT NULL ORDER BY t DESC LIMIT 3000",   // fee 없는 행은 수집기가 버리므로 창(3000)을 낭비하지 않는다
-      )
-        .bind(cut)
-        .all();
+      // 무기(cat)를 주면 그 무기 행만 — 창을 무기별로 나눠 준다.
+      // 안 나누면 창 하나(3000행)를 7종이 공유해서, 한 무기로 밀어넣는 플러딩이 다른 무기의
+      // 정직한 표본까지 통째로 밀어낸다. 수집기도 사이클마다 같은 3000행을 7번 받아 거의 다 버렸다.
+      // cat 없는 옛 행은 수집기와 같은 기본값(weapon.bow)으로 본다.
+      const cat = url.searchParams.get("cat");
+      if (cat && !CATEGORIES.has(cat)) return json({ error: "bad cat" }, 400);
+      const { results } = cat
+        ? await env.DB.prepare(
+            "SELECT t, fee, row FROM harvest WHERE t >= ?1 AND fee IS NOT NULL" +
+              " AND COALESCE(json_extract(row, '$.cat'), 'weapon.bow') = ?2" +
+              " ORDER BY t DESC LIMIT 800",
+          )
+            .bind(cut, cat)
+            .all()
+        : await env.DB.prepare(
+            "SELECT t, fee, row FROM harvest WHERE t >= ?1 AND fee IS NOT NULL ORDER BY t DESC LIMIT 3000",   // fee 없는 행은 수집기가 버리므로 창을 낭비하지 않는다
+          )
+            .bind(cut)
+            .all();
       const rows = results.map((r) => ({ ...JSON.parse(r.row), t: r.t }));
       return json({ taken_at: Date.now(), rows });
     }

@@ -1256,8 +1256,12 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, 
         if not HARVEST_URL:
             return merged
         try:
-            req = urllib.request.Request(HARVEST_URL + "/recent",
-                                         headers={"User-Agent": "poe2-bow-collector"})
+            # 무기별로 받는다 — 창이 무기마다 따로라 한 무기 플러딩이 다른 무기를 못 밀어낸다.
+            # (예전엔 3000행 한 창을 7종이 공유했고, 사이클마다 같은 3000행을 7번 받아 거의 다 버렸다)
+            _u = HARVEST_URL + "/recent"
+            if category:
+                _u += "?cat=" + urlquote(category, safe="")
+            req = urllib.request.Request(_u, headers={"User-Agent": "poe2-bow-collector"})
             with urllib.request.urlopen(req, timeout=15) as r:
                 rows = (json.load(r) or {}).get("rows") or []
         except Exception as e:
