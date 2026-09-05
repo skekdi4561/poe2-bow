@@ -1839,22 +1839,37 @@ def collect_weapon(url, cat_id, suffix):
     return len(rows)
 
 
+SITE_URL = "https://skekdi4561.github.io/poe2-bow"
+
+
 def bootstrap_latest():
     """갓 설치한 프로그램도 열자마자 곡선이 보이게 — 시세가 없을 때만 공개 사이트에서 받아온다.
-    거래소가 아니라 우리 사이트(github.io)를 부르는 것이라 레이트 리밋과 무관하다."""
-    if os.path.exists(LATEST):
-        return
-    try:
-        req = urllib.request.Request("https://skekdi4561.github.io/poe2-bow/latest.json",
-                                     headers={"User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = r.read()
-        json.loads(data.decode("utf-8"))                 # 깨진 응답이면 여기서 던져 저장 안 함
-        with open(LATEST, "wb") as f:
-            f.write(data)
-        print("공유 시세를 받아왔습니다 (사이트 최신 스냅샷)")
-    except Exception as e:
-        print("공유 시세 받기 실패(무시하고 계속): %s" % e)
+    거래소가 아니라 우리 사이트(github.io)를 부르는 것이라 레이트 리밋과 무관하다.
+
+    무기 7종 전부 받는다. 예전엔 활만 받아서, 갓 설치한 운영자가 나머지 6종 화면을
+    빈 채로 봤다(그 무기 수집 차례가 올 때까지 — 사이클당 1종이라 몇 시간). 있는 파일은
+    건드리지 않으므로 이미 수집 중이면 요청이 아예 안 나간다."""
+    got = 0
+    for w in ATTACK_WEAPONS:
+        suffix = w[1] if w[1] != "bow" else ""
+        path = LATEST if not suffix else os.path.join(ROOT, "latest.%s.json" % suffix)
+        name = os.path.basename(path)
+        if os.path.exists(path):
+            continue
+        try:
+            req = urllib.request.Request("%s/%s" % (SITE_URL, name),
+                                         headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = r.read()
+            json.loads(data.decode("utf-8"))             # 깨진 응답이면 여기서 던져 저장 안 함
+            with open(path, "wb") as f:
+                f.write(data)
+            got += 1
+        except Exception as e:
+            # 한 무기가 실패해도 나머지는 받는다 — 아직 그 무기 스냅샷이 없는 리그 초반엔 404 가 정상
+            print("공유 시세 받기 실패(무시하고 계속): %s: %s" % (name, e))
+    if got:
+        print("공유 시세 %d종을 받아왔습니다 (사이트 최신 스냅샷)" % got)
 
 
 def push_latest(cwd=None, path=None):
@@ -3075,16 +3090,27 @@ def demo():
               "price": 999, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
     assert "폭탄" not in [r["name"] for r in merge_harvest(list(_base), rows=_huge)]
 
-    # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다
-    keepL2 = LATEST
+    # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다 — 무기 7종 전부
+    keepL2, keepR2 = LATEST, ROOT
     d3 = tempfile.mkdtemp()
     try:
+        globals()["ROOT"] = d3
         globals()["LATEST"] = os.path.join(d3, "l.json")
-        open(LATEST, "w").write("{}")
-        bootstrap_latest()                     # 존재 -> 즉시 반환 (여기서 요청이 나가면 안 된다)
+        for _w in ATTACK_WEAPONS:                        # 7종 파일을 미리 깔아 둔다
+            _sfx = _w[1] if _w[1] != "bow" else ""
+            _p = LATEST if not _sfx else os.path.join(d3, "latest.%s.json" % _sfx)
+            open(_p, "w").write("{}")
+        _netB = []
+        _keepReq = urllib.request.Request
+        urllib.request.Request = lambda *a, **k: _netB.append(a) or _keepReq(*a, **k)
+        try:
+            bootstrap_latest()                 # 전부 존재 -> 요청이 한 번도 나가면 안 된다
+        finally:
+            urllib.request.Request = _keepReq
+        assert _netB == [], _netB
         assert open(LATEST).read() == "{}"
     finally:
-        globals()["LATEST"] = keepL2
+        globals()["LATEST"] = keepL2; globals()["ROOT"] = keepR2
         shutil.rmtree(d3, ignore_errors=True)
 
     # 가격 체크: 파서는 페이지 parseItem 과 같은 픽스처로 같은 답을 내야 한다
