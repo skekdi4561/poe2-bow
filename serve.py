@@ -79,8 +79,14 @@ TOP_CAP = 100            # 그 밴드에서 실제로 뜰 최대 개수(폭주 �
 # cut 아래로만 둔다 — cut 위는 상위 100개가 이미 덮는다.
 PROBE_LEVELS = 4          # 무기당 문턱 수 = 사이클당 검색·fetch 각 +4
 PROBE_FLOOR = 0.45        # 가장 낮은 문턱 = cut 의 45% (그 아래는 살 사람이 없다)
-PROBE_SHAPE = 1.5         # >1 이면 위쪽이 촘촘해진다 — 가격이 DPS 에 지수로 오르므로
-                          # 곡선이 급한 고-DPS 쪽에 점이 더 필요하다
+PROBE_SHAPE = 1.5         # >1 이면 위쪽이 촘촘해진다. 1.5 로 둔 근거(2026-09-05 실측):
+                          # 가격이 폭발하는 구간은 cut **위쪽**인데 거기는 상위 100개가
+                          # 이미 빠짐없이 덮는다. cut 아래 구간의 칸별 최저가는 활
+                          # 1.0→2.0→1.0→1.0, 육척봉 2.0 평탄으로 최고/최저 1.0~2.0배뿐이라
+                          # 해상도를 더 줘도 구분할 게 없다. 시장이 두꺼워져 아래 구간도
+                          # 가팔라지면 그때 올릴 것 — 판단 근거는 문턱별 수확 로그다.
+PROBE_MIN_GAP = 0.05      # 이웃 문턱 최소 간격(cut 대비). 너무 붙으면 "그 DPS 이상 중 가장 싼
+                          # 10개"가 거의 같은 매물이라 검색·조회 한 번 쓰고 0개를 건진다.
 PROBE_TAKE = 10
 # 분업(사용자 결정): 저-DPS/저가는 사용자들의 가격검색이 크라우드로 채우고, 고-DPS
 # 끝단은 우리가 전담한다. 그래서 옛 저·중 밴드(450~660 촘촘)를 걷어내고 600~1100 을
@@ -930,12 +936,17 @@ def probe_levels(cut, n=None, floor=None, shape=None):
     shape = PROBE_SHAPE if shape is None else shape
     if not cut or cut <= 0 or n <= 0:
         return []
+    gap = max(1, int(round(cut * PROBE_MIN_GAP)))
     out = []
     for i in range(n):
         f = 1.0 - (1.0 - floor) * (((i + 1) / float(n)) ** shape)
         lo = int(round(cut * f))
-        if lo > 0 and lo not in out:
-            out.append(lo)
+        # cut 자신과도, 직전 문턱과도 최소 간격을 둔다 — 붙으면 같은 매물을 다시 뜨는 꼴이다
+        if lo <= 0 or lo > cut - gap:
+            continue
+        if out and out[-1] - lo < gap:
+            continue
+        out.append(lo)
     return out
 
 
