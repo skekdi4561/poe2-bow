@@ -2891,7 +2891,12 @@ def demo():
     # 오염 방어(10배 기준): 명백한 날조만 거부하고 진짜 꿀매물(몇 배 저렴)은 통과
     _poison = [{"id": "P", "name": "조작활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
                 "price": 0.4, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
-    assert "조작활" not in [r["name"] for r in merge_harvest(list(_base), rows=_poison)]
+    _callsP = []
+    assert "조작활" not in [r["name"] for r in merge_harvest(
+        list(_base), rows=_poison, verifier=lambda r: (_callsP.append(r["id"]), True)[1])]
+    # verifier 를 안 주면 이 단언은 "게이트가 막았다"가 아니라 "검증자가 없어 못 올렸다"로도
+    # 통과한다 — 무조건 True 인 검증자를 주고, 그걸 부르지도 않았음까지 확인해야 진짜 폐기다.
+    assert _callsP == [], _callsP
     _fair = [{"id": "F", "name": "꿀매물활", "pdps": 90, "edps": 0, "aps": 1, "crit": 1,
               "price": 1, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
     assert "꿀매물활" in [r["name"] for r in merge_harvest(list(_base), rows=_fair, verifier=_yes)]
