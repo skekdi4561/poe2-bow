@@ -32,6 +32,27 @@ function fakeEl() {
 }
 
 const errors = [];
+// 표의 헤더 칸 수와 본문 칸 수가 어긋나면 열이 통째로 밀린다. 실제로 밀려 있었다 —
+// 방패에서 JS 가 th 두 개만 display:none 해서 헤더 7 / 본문 9 였고, 스크린샷으로도
+// "값이 한 칸씩 밀렸다" 정도로만 보여 원인을 못 짚는 종류였다. 지금은 헤더·본문이 같은
+// 클래스(c-phys/c-ele)로 묶여 CSS 한 규칙에 같이 숨지만, 나중에 td 만 추가하는 실수는 여전히 가능하다.
+{
+  const thead = html.slice(html.indexOf('<thead>'), html.indexOf('</thead>'));
+  const body = html.slice(html.indexOf('.innerHTML = view.map('), html.indexOf('</tr>`;'));
+  const nTh = (thead.match(/<th[\s>]/g) || []).length;
+  const nTd = (body.match(/<td[\s>]/g) || []).length;
+  if (nTh !== nTd) errors.push(`매물 표 칸 수 불일치 — thead ${nTh}개 vs 행 템플릿 ${nTd}개`);
+  // 숨기는 열은 반드시 헤더·본문 양쪽에 같은 수로 있어야 한다(한쪽만 숨으면 다시 밀린다)
+  for (const c of ['c-phys', 'c-ele']) {
+    const inHead = (thead.match(new RegExp(c, 'g')) || []).length;
+    const inBody = (body.match(new RegExp(c, 'g')) || []).length;
+    if (inHead !== 1 || inBody !== 1)
+      errors.push(`열 클래스 ${c} — thead ${inHead}개 / 본문 ${inBody}개 (각각 1개여야 함)`);
+  }
+  if (!/#tbl\.arm[^{]*\.c-phys/.test(html))
+    errors.push('#tbl.arm .c-phys 숨김 규칙이 없다 — 방패에서 물리 열이 안 숨는다');
+}
+
 // 무기 목록이 세 벌(수집기·워커·이 페이지) 있는데 셋이 어긋나면 무기 탭 하나가 조용히
 // 빈 화면이 된다 — 수집기가 안 뜨거나, 워커가 크라우드를 거부하거나, 페이지가 없는 파일을 찾는다.
 // 지금까지 아무도 이 정합을 검사하지 않았다(부적이 09-05 에 추가된 최신 항목이라 딱 이 자리다).

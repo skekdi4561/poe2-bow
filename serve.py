@@ -257,15 +257,58 @@ def api_get(url, payload=None, _retried=False):
         raise TradeError("거래소에 연결하지 못했습니다: %s" % e.reason)
 
 
-def prop(item, *patterns):
-    """properties/additionalProperties 에서 첫 번째로 맞는 값 문자열을 꺼낸다."""
-    for p in (item.get("properties") or []) + (item.get("additionalProperties") or []):
-        name = p.get("name") or ""
-        if any(re.search(pat, name) for pat in patterns):
-            vals = p.get("values") or []
-            if vals and vals[0]:
-                return str(vals[0][0])
+# 거래소 property 의 type 코드. Exiled Exchange 2 의 TradePropType 열거를 그대로 옮겼다
+# (poe2-overlay/renderer/src/web/price-check/trade/pathofexile-trade.ts:121-137,
+#  같은 파일 :1383/:1385 가 Quality=6 · GemLevel=5 를 프로덕션에서 이 오프셋으로 쓴다).
+# 이름 정규식보다 이게 먼저다 — 이름은 언어·베이스마다 흔들리는데 코드는 안 흔들린다.
+PROP_CRIT, PROP_APS, PROP_BLOCK = 12, 13, 15
+
+
+def prop(item, *patterns, **kw):
+    """properties/additionalProperties 에서 값 문자열을 꺼낸다.
+
+    ptype 을 주면 **그 코드를 전 항목에서 먼저** 훑고, 없을 때만 이름 정규식으로 떨어진다.
+    한 루프에서 OR 로 합치면 안 된다 — 느슨한 이름 정규식이 먼저 순회되는 이웃 속성
+    (예: "막기 회복" / "Block Recovery")에 걸려 정확한 코드보다 먼저 이길 수 있다.
+    """
+    ptype = kw.get("ptype")
+    plist = (item.get("properties") or []) + (item.get("additionalProperties") or [])
+    tests = []
+    if ptype is not None:
+        tests.append(lambda p: p.get("type") == ptype)
+    if patterns:
+        tests.append(lambda p: any(re.search(pat, p.get("name") or "") for pat in patterns))
+    for hit in tests:
+        for p in plist:
+            if hit(p):
+                vals = p.get("values") or []
+                if vals and vals[0]:
+                    return str(vals[0][0])
     return None
+
+
+_PROP_DUMPED = set()
+
+
+def dump_props(item, tag):
+    """추출이 실패한 아이템의 property 목록을 태그당 딱 한 번 찍는다.
+
+    거래소를 더 부르지 않고 "거래소가 실제로 뭘 주는지" 확인하는 유일한 창구다.
+    전역 불리언으로 두면 오래 도는 수집기에서 첫 실패 뒤 영원히 무음이 되므로 태그별로 센다.
+    지금 이걸로 확인하려는 것 둘:
+      · 방패 properties 에 막기 확률이 실려 오는가 (안 오면 수집 자체가 불가능하다)
+      · 몽환의 육척봉 76개 중 69개가 왜 치확 0 으로 읽히는가 (실측 2026-09-06)
+    """
+    if tag in _PROP_DUMPED or len(_PROP_DUMPED) > 40:
+        return
+    _PROP_DUMPED.add(tag)
+    ps = (item.get("properties") or []) + (item.get("additionalProperties") or [])
+    def one(p):
+        v = p.get("values") or []
+        return [p.get("type"), p.get("name"), (v[0][0] if v and v[0] else None)]
+    print("     [속성덤프:%s] %s → %s"
+          % (tag, item.get("typeLine") or item.get("baseType") or "?",
+             json.dumps([one(p) for p in ps], ensure_ascii=False)[:700]))
 
 
 def to_number(s):
@@ -339,18 +382,36 @@ def normalize(res, metric="dps"):
         if pdps is None:
             return None                                # 그 종류가 아니거나 값이 없는 항목
     name = " ".join(x for x in (item.get("name"), item.get("typeLine") or item.get("baseType")) if x)
-    return {
+    base = item.get("typeLine") or item.get("baseType") or "?"
+    row = {
         "id": str(res.get("id") or ""),
         "name": name.strip() or "이름 없음",
         "pdps": round1(pdps),        # half-up — harvest.ts Math.round 과 지문 일치(round1 주석 참고)
         "edps": round1(edps),
-        "aps": to_number(prop(item, r"Attacks per Second", r"초당 공격")) or 0,
-        "crit": to_number(prop(item, r"Critical .*Chance", r"치명타")) or 0,
+        "aps": to_number(prop(item, r"Attacks per Second", r"초당 공격", ptype=PROP_APS)) or 0,
+        "crit": to_number(prop(item, r"Critical .*Chance", r"치명타", ptype=PROP_CRIT)) or 0,
         "price": amount,
         "cur": cur,
         "rarity": rarity_of(item),
         "mods": mod_lines(item),
     }
+    if metric == "dps":
+        # 무기인데 치확이 안 잡히면 이름 정규식이 그 베이스에서 안 먹은 것이다.
+        # 실측(2026-09-06): 육척봉만 그랬고 몽환의 육척봉 76개 중 69개가 0 이었다.
+        if not row["crit"]:
+            dump_props(item, "치확/" + base)
+    else:
+        # 방패의 막기 확률은 extended 에 없다 — FetchResultExtended 는 dps/pdps/edps/ar/ev/es/ward 뿐이라
+        # ar 처럼 못 꺼낸다. 대신 aps/crit 과 **같은 채널**(properties)에 있어서 prop() 이 그대로 쓰인다.
+        # 다만 "거래소가 방패 properties 에 막기를 준다"는 것 자체가 아직 미확인이다(호출 금지라 확정 불가).
+        # 그래서 못 찾으면 키를 아예 안 넣고 덤프를 남긴다 — 0 을 넣으면 "막기 0%인 방패"라는
+        # 없는 사실을 만들고, 화면의 '수집 안 됨' 표시와 구분이 안 된다.
+        blk = to_number(prop(item, r"^\[?Block chance", r"^\[?막기 확률", ptype=PROP_BLOCK))
+        if blk is not None and 0 < blk <= 100:
+            row["block"] = blk           # 범위 밖이면 엉뚱한 속성을 잡은 것 — 방어도는 1275~1860 이다
+        else:
+            dump_props(item, "막기/" + base)
+    return row
 
 
 def search_min_dps(base, league_path, query, lo, sort=None, metric="dps"):
@@ -3296,6 +3357,33 @@ def demo():
                       "listing": {"price": {"currency": "divine", "amount": 3}}}, "ar") is None  # ar 없으면 버림
     assert normalize({"item": {"extended": {"ar": 812}, "rarity": "Rare"},
                       "listing": {"price": {"currency": "divine", "amount": 3}}}) is None        # dps 지표론 방패 안 받음
+    # 아이템 속성 추출은 **이름보다 type 코드가 먼저**여야 한다. 이름 정규식은 이웃 속성에
+    # 걸리고(막기 회복 등) 베이스마다 안 먹기도 한다 — 실측(2026-09-06): 육척봉만 치확이 비었고
+    # 그중 몽환의 육척봉은 76개 중 69개가 0 이었다(다른 무기 7종은 0건).
+    def _pi(*ps):                     # properties 만 가진 최소 아이템
+        return {"typeLine": "T", "properties": list(ps)}
+    _blk = {"type": PROP_BLOCK, "name": "막기 확률", "values": [["25%", 0]]}
+    _rec = {"type": 99, "name": "막기 회복", "values": [["77", 0]]}      # 이름만 보면 먼저 걸린다
+    assert prop(_pi(_rec, _blk), r"막기", ptype=PROP_BLOCK) == "25%"     # 코드가 이름보다 먼저
+    assert prop(_pi(_rec, _blk), r"막기") == "77"                        # 이름만 쓰면 이웃을 집는다
+    assert prop(_pi(_rec), r"^\[?막기 확률", ptype=PROP_BLOCK) is None   # 앵커가 회복을 안 삼킨다
+    assert prop(_pi({"name": "초당 공격 횟수", "values": [["1.42", 0]]}),
+                r"초당 공격", ptype=PROP_APS) == "1.42"                  # type 이 없어도 이름으로 떨어진다
+    # 방패: 막기를 찾으면 키가 생기고, 못 찾으면 **키 자체가 없다**(0 을 넣으면 없는 사실을 만든다)
+    def _shield(*ps):
+        return {"item": {"extended": {"ar": 900}, "typeLine": "타워 실드", "rarity": "Rare",
+                         "properties": list(ps)},
+                "listing": {"price": {"currency": "divine", "amount": 2}}}
+    assert normalize(_shield(_blk), "ar")["block"] == 25.0
+    assert "block" not in normalize(_shield(), "ar")
+    assert "block" not in normalize(_shield(_rec), "ar"), "막기 회복을 막기 확률로 착각했다"
+    # 범위 밖은 엉뚱한 속성을 잡은 것 — 방어도(실측 1275~1860)가 새어 들어오면 안 된다
+    assert "block" not in normalize(_shield({"type": PROP_BLOCK, "name": "막기 확률",
+                                             "values": [["1860", 0]]}), "ar")
+    # 무기 행에는 block 키를 아예 안 단다(무기 5,788행에 근거 없는 0 을 싣지 않는다)
+    assert "block" not in normalize({"item": {"extended": {"pdps": 500}, "rarity": "Rare"},
+                                     "listing": {"price": {"currency": "divine", "amount": 3}}})
+
     _seen_q = {}
     _kpm = (globals()["api_get"], globals()["throttle"])
     try:

@@ -137,6 +137,9 @@ th{
   color:var(--ink-2); font-weight:600; padding:0 10px 8px; border-bottom:1px solid var(--line);
 }
 th:first-child,td:first-child{text-align:left}
+/* 방패는 지표가 방어도 하나뿐이라 물리·원소 열이 없다. 헤더와 본문을 **같은 클래스**로 묶어
+   한 규칙으로 숨긴다 — 예전엔 JS 가 th 두 개만 display:none 해서 헤더 7 / 본문 9 로 어긋났다. */
+#tbl.arm .c-phys, #tbl.arm .c-ele{display:none}
 td{padding:9px 10px; border-bottom:1px solid var(--line); text-align:right}
 tr.front td{background:var(--accent-soft)}
 tr:hover td{background:var(--surface-2)}
@@ -307,9 +310,9 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 <div class="card">
   <h2>매물</h2>
   <div class="tablewrap">
-    <table>
+    <table id="tbl">
       <thead><tr>
-        <th>무기</th><th id="th-phys">물리</th><th id="th-ele">원소</th><th id="th-dps">총 DPS</th>
+        <th>무기</th><th class="c-phys">물리</th><th class="c-ele">원소</th><th id="th-dps">총 DPS</th>
         <th id="th-offopt">DPS 밖 옵션</th><th id="th-price">가격</th><th id="th-per">DPS 10당</th><th>판정</th><th></th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -681,7 +684,7 @@ let bows = [];
 // ReferenceError 로 스크립트가 통째로 죽어 빈 화면이 됐다(첫 방문자는 배열이 비어 콜백이 안 돌아 멀쩡).
 // 있는 값은 숫자여야 한다 — 문자열 pdps 는 pdps+edps 가 문자열 연결이 되어 DPS 가 폭증한다. 없는 값은 허용
 // (수동 등록 행은 pdps 대신 pmin/pmax 를 갖는다). 없는 값의 표시는 fmt 가 던지지 않게 맡는다.
-const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'price', 'pmin', 'pmax', 'emin', 'emax']
+const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'block', 'price', 'pmin', 'pmax', 'emin', 'emax']
   .every(k => r[k] === undefined || (typeof r[k] === 'number' && isFinite(r[k])));
 bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
 let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가 먼저 참조하므로 여기서 선언
@@ -719,11 +722,10 @@ function applyMetricLabels(){
   set('th-per', `${M} 10당`);
   set('budget-sort', budgetDesc ? `${M} 높은 순` : `${M} 낮은 순`);
   // 방패는 지표가 하나뿐이라 물리/원소 구분이 없다 — 비교 기준 자체를 숨기고 총으로 고정한다.
-  const row = $('metric-row'), hint = $('metric-hint'), ph = $('th-phys'), pe = $('th-ele');
+  const row = $('metric-row'), hint = $('metric-hint'), tbl = $('tbl');
   if (row) row.style.display = arm ? 'none' : '';
   if (hint) hint.style.display = arm ? 'none' : '';
-  if (ph) ph.style.display = arm ? 'none' : '';
-  if (pe) pe.style.display = arm ? 'none' : '';
+  if (tbl) tbl.classList.toggle('arm', arm);   // 헤더·본문 열을 한꺼번에 (CSS #tbl.arm 참고)
   if (arm && $('metric')) $('metric').value = 'total';
 }
 
@@ -1006,7 +1008,7 @@ function partition(metric = $('metric').value, critOn = $('crit-on').checked,
     const raw = dpsOf(b);
     const k = critOn ? 1 + (b.crit || 0) / 100 * (critBonus / 100) : 1;
     const d = { phys: raw.phys * k, ele: raw.ele * k, total: raw.total * k };
-    return { src: b, i, name: b.name, aps: b.aps, crit: b.crit, rarity: b.rarity,
+    return { src: b, i, name: b.name, aps: b.aps, crit: b.crit, block: b.block, rarity: b.rarity,
              cond: b.cond || null,
              offs: offMods(b), dps: d, d: d[metric], p: exPrice(b) };
   });
@@ -1171,13 +1173,19 @@ function render(){
     : !base.length ? `지금 비교 기준으로는 DPS가 0인 ${weaponLabel()}뿐입니다. 아래 “기준 설정”을 확인하세요.`
     : `조건에 맞는 ${weaponJosa('이', '가')} 없습니다. 문턱값을 낮춰보세요.`;
   $('empty').style.display = view.length ? 'none' : '';
+  // 매물 한 줄의 "그 아이템 자체 수치". 무기는 공속·치확, 방패는 막기 확률 —
+  // 둘 다 거래소가 아이템 속성으로 주는 **최종값**(베이스 + 로컬 증가 반영)이다.
+  // 0 은 '0%'가 아니라 '못 읽었다'는 뜻이라 '—' 로 쓴다(실측: 몽환의 육척봉 76개 중 69개가 치확 0).
+  const statLine = b => isArmourCat()
+    ? `막기 ${b.block ? fmt(b.block, 0) + '%' : '—'}`
+    : `${fmt(b.aps, 2)} aps · 치명 ${b.crit ? fmt(b.crit, 2) + '%' : '—'}`;
   $('rows').innerHTML = view.map(b => {
     const chips = Object.entries(b.offs).slice(0, 3)
       .map(([k, v]) => `<span class="pill note">${esc(shortMod(k, v))}</span>`).join('');
     return `<tr class="${front.has(b) ? 'front' : ''}">
-      <td><span class="name">${esc(b.name || '이름 없음')}</span><span class="sub num">${fmt(b.aps, 2)} aps · 치명 ${fmt(b.crit || 0, 2)}%${b.rarity && b.rarity !== 'Rare' ? ' · ' + esc(RARITY_KO[b.rarity] || b.rarity) : ''}</span></td>
-      <td class="num">${fmt(b.dps.phys)}</td>
-      <td class="num">${fmt(b.dps.ele)}</td>
+      <td><span class="name">${esc(b.name || '이름 없음')}</span><span class="sub num">${statLine(b)}${b.rarity && b.rarity !== 'Rare' ? ' · ' + esc(RARITY_KO[b.rarity] || b.rarity) : ''}</span></td>
+      <td class="num c-phys">${fmt(b.dps.phys)}</td>
+      <td class="num c-ele">${fmt(b.dps.ele)}</td>
       <td class="num">${fmt(b.dps.total)}</td>
       <td>${chips ? `<span class="pills">${chips}</span>` : '<span class="sub">—</span>'}</td>
       <td class="num">${money(b.p)}</td>
