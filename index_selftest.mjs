@@ -48,11 +48,11 @@ const errors = [];
 
   const pyIds = pyW.map((x) => x[0]).sort();
   const wkIds = [...new Set(wkW)].sort();
-  // 워커는 **크라우드로 들어오는 것만** 받으면 된다(방패는 앱이 안 보낸다) — 부분집합이면 맞다.
-  // 반대로 워커에만 있는 id 는 오타이거나 수집기에서 빠진 것이라 반드시 걸러야 한다.
-  const orphan = wkIds.filter((i) => !pyIds.includes(i));
-  if (orphan.length)
-    errors.push(`워커에만 있는 무기 id — serve.py 에 없음: [${orphan}]`);
+  // 정확히 같아야 한다. 한때 "워커는 부분집합이면 맞다"로 느슨하게 뒀는데, 그 순간
+  // armour.shield 누락이 이 검사를 그대로 통과했고 첫 방패 사이클에서 크라우드가
+  // HTTP 400(bad cat)으로 통째로 버려졌다. 수집기가 보내는 것은 워커가 다 받아야 한다.
+  if (pyIds.join(",") !== wkIds.join(","))
+    errors.push(`무기 id 불일치 — serve.py [${pyIds}] vs worker [${wkIds}]`);
 
   const pySfx = pyW.map((x) => x[1]).sort();
   const htmlSfx = [...htmlW].sort();

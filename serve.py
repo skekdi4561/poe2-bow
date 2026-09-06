@@ -1005,7 +1005,11 @@ def load_frontier_probe(base, league_path, query, seen_ids=(), levels=None, metr
         if not ids:
             continue                           # 이 대역은 이미 다 갖고 있다
         got = 0
-        for row in fetch_ids(base, r["id"], ids):
+        # metric 을 넘겨야 한다. 안 넘기면 기본값 "dps" 로 normalize 가 돌아 방패 행이
+        # 전부 None 이 된다(방어구엔 pdps/edps 가 없다) — 실측(2026-09-06 첫 방패 사이클):
+        # 탐침 [1145,1032,897,745,576] 다섯 단계가 전부 "0개"였고 방패만 정확히 100행이었다.
+        # 검색은 metric 을 받는데 fetch 만 안 받아서 조용히 "그 대역에 매물이 없다"로 보였다.
+        for row in fetch_ids(base, r["id"], ids, metric=metric):
             seen.add(row.get("id"))
             rows.append(row); got += 1
         print("     탐침 %d+ : %d개" % (lo, got))   # 어느 대역이 실제로 수확되는지 봐야 문턱을 조율한다
@@ -3309,6 +3313,26 @@ def demo():
         assert "dps" not in _f, "방패인데 DPS 필터가 섞였다"
     finally:
         globals()["api_get"], globals()["throttle"] = _kpm
+
+    # 탐침도 같은 지표로 fetch 해야 한다. 검색만 metric 을 받고 fetch 가 기본값 "dps" 로
+    # 돌면 normalize 가 방어구 행을 전부 None 으로 버려서, 탐침이 "0개"로 조용히 죽는다.
+    # 실측(2026-09-06 첫 방패 사이클): 문턱 다섯 단계가 전부 0개였고 방패만 딱 100행이었다.
+    _kpm2 = (globals()["api_get"], globals()["throttle"], globals()["PAUSE"])
+    try:
+        globals()["throttle"] = lambda bk, mw=None: None
+        globals()["PAUSE"] = 0
+        def _cap2(url, body=None, **kw):
+            if body is None:                       # fetch — 방어구라 pdps/edps 가 없다
+                return {"result": [{"id": "s1", "item": {"extended": {"ar": 900},
+                                    "typeLine": "타워 실드", "rarity": "Rare"},
+                                    "listing": {"price": {"currency": "divine", "amount": 2}}}]}
+            return {"id": "Q", "result": ["s1"], "total": 1}
+        globals()["api_get"] = _cap2
+        _pr = load_frontier_probe("b", "/l", {"filters": {}}, levels=[600], metric="ar")
+        assert [r["pdps"] for r in _pr] == [900.0], _pr   # metric 이 안 넘어가면 여기가 []
+        assert load_frontier_probe("b", "/l", {"filters": {}}, levels=[600]) == []  # dps 로는 안 잡힌다
+    finally:
+        globals()["api_get"], globals()["throttle"], globals()["PAUSE"] = _kpm2
 
     # 이력 정리: 읽는 창 밖은 지우되 창 안은 절대 안 건드린다(지우면 추세·합집합이 빈다)
     _kdP = DB; _dP = tempfile.mkdtemp(); DB = os.path.join(_dP, "p.db")
