@@ -1154,8 +1154,8 @@ def load_top_dps(page_url, category=None):
                                 seen_ids=[x.get("id") for x in rows], levels=_levels,
                                 metric=metric)
     if probe:
-        print("     최전선 탐침: %d개 추가 — 최저 %.0f DPS"
-              % (len(probe), min(x["pdps"] + x["edps"] for x in probe)))
+        print("     최전선 탐침: %d개 추가 — 최저 %.0f %s"
+              % (len(probe), min(x["pdps"] + x["edps"] for x in probe), label))
         rows = rows + probe
     return rows, total, skipped, base, league
 
@@ -1446,6 +1446,10 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, 
                "price": num(r.get("price")), "cur": r.get("cur") or "",
                "rarity": r.get("rarity") or "", "mods": mods,
                "cond": None, "t": int(t), "src": "user"}
+        # 방패 막기. 없으면 키를 안 단다 — "미수집"과 "0"을 구분하는 normalize 규약 그대로다.
+        _blk = num(r.get("block"))
+        if 0 < _blk <= 100:
+            row["block"] = _blk
         if row["price"] <= 0 or row["price"] > HMAX["price"] or row["cur"] not in PRICE_CURRENCIES:
             continue
         if row["pdps"] > HMAX["dps"] or row["edps"] > HMAX["dps"] or row["pdps"] < 0 or row["edps"] < 0:
@@ -1484,10 +1488,10 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, 
 _HARVEST_VERDICTS = {}
 
 
-def make_harvest_verifier(base, league_path, query, budget=8):
+def make_harvest_verifier(base, league_path, query, budget=8, metric="dps"):
     """최전선 잠식 크라우드 행의 진위를 거래소로 확인하는 검증자를 만든다.
 
-    검증법: 그 행의 DPS 문턱으로 가격순 검색 → 주장한 매물 id 가 결과에 실재하고
+    검증법: 그 행의 지표 문턱으로 가격순 검색 → 주장한 매물 id 가 결과에 실재하고
     fetch 한 실제 가격·화폐가 주장과 일치해야 통과. 사이클당 예산(기본 8행)을 두어
     레이트 리밋을 지킨다 — 예산을 넘긴 행은 검증 못 했으므로 곡선에 안 올린다.
     """
@@ -1506,10 +1510,13 @@ def make_harvest_verifier(base, league_path, query, budget=8):
         ok = False
         try:
             throttle("search")
+            # metric 을 넘겨야 한다. 방패는 지표가 ar 인데 dps 로 물으면 검색이 0건이고,
+            # 설령 결과에 있어도 fetch_ids 가 metric="dps" 로 normalize 해 방어구 행을
+            # None 으로 버린다 — 어느 쪽이든 결과는 "무조건 False" 다.
             r = search_min_dps(base, league_path, query,
-                               int(row["pdps"] + row["edps"]))
+                               int(row["pdps"] + row["edps"]), metric=metric)
             if vid in (r.get("result") or []):
-                fetched = fetch_ids(base, r["id"], [vid])
+                fetched = fetch_ids(base, r["id"], [vid], metric=metric)
                 ok = bool(fetched) and fetched[0]["price"] == row["price"]                     and fetched[0]["cur"] == row["cur"]
         except TradeError as e:
             print("     진위 확인 실패(%s): %s" % (vid[:12], e))
@@ -1901,7 +1908,8 @@ def collect_weapon(url, cat_id, suffix):
         rows = merge_harvest(
             rows,
             verifier=make_harvest_verifier(base, league_path0,
-                                           with_category(q0, cat_id), budget=3),
+                                           with_category(q0, cat_id), budget=3,
+                                           metric=metric_of(cat_id)),
             league=league, category=cat_id, rates=rates)
     except Exception as e:                    # 크라우드는 부가정보 — 실패해도 수집은 나간다
         print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
@@ -2765,6 +2773,17 @@ def demo():
                              league="L", category="weapon.spear")) == 1
     assert merge_harvest([], rows=[_mkw("weapon.spear", "W2")], verifier=_ok,
                          league="L", category="weapon.bow") == [], "다른 무기가 섞였다"
+    # 방패 막기는 크라우드 병합에서 살아남아야 한다. 행을 필드별로 골라 담는 리터럴이라
+    # 여기 안 적으면 조용히 사라지고, 같은 화면에서 수집기 행만 막기를 갖는 비대칭이 된다.
+    _sh = _mkw("armour.shield", "S1"); _sh["block"] = 32.0
+    _gs = merge_harvest([], rows=[_sh], verifier=_ok, league="L", category="armour.shield")
+    assert len(_gs) == 1 and _gs[0].get("block") == 32.0, _gs
+    # 범위 밖·미수집은 키를 안 단다 — "미수집"과 "0"을 구분하는 normalize 규약 그대로다
+    _sh0 = _mkw("armour.shield", "S2"); _sh0["block"] = 0
+    assert "block" not in merge_harvest([], rows=[_sh0], verifier=_ok,
+                                        league="L", category="armour.shield")[0]
+    assert "block" not in merge_harvest([], rows=[_mkw("weapon.bow", "B9")], verifier=_ok,
+                                        league="L", category="weapon.bow")[0]
     # cat 이 없는 옛 행은 활로 본다(그때 게이트가 활 전용이었다)
     _old = {k: v for k, v in _mkw("x", "W3").items() if k != "cat"}
     assert len(merge_harvest([], rows=[_old], verifier=_ok, league="L", category="weapon.bow")) == 1
@@ -3161,6 +3180,23 @@ def demo():
         _before = _net["search"]
         _v({"id": "r0", "pdps": 100, "edps": 0, "price": 1, "cur": "divine"})
         assert _net["search"] == _before              # 캐시된 id 는 네트워크 0
+        # 방패 검증자는 지표를 ar 로 물어야 한다. dps 로 물으면 검색이 0건이고, 설령 결과에
+        # 있어도 fetch_ids 가 metric="dps" 로 normalize 해 방어구 행을 버려서 **무조건 False** 다.
+        # 방패 크라우드를 켜는 순간 최전선을 바꾸는(=가장 값진) 행부터 죽는 자리다.
+        _HARVEST_VERDICTS.clear()
+        _mk = {}
+        def _fs2(base, lp, q, lo, **kw):
+            _mk["search"] = kw.get("metric")
+            return {"id": "Q", "result": ["SH"]}
+        def _ff2(base, qid, ids, **kw):
+            _mk["fetch"] = kw.get("metric")
+            return [{"price": 2.0, "cur": "divine"}]
+        globals()["search_min_dps"], globals()["fetch_ids"] = _fs2, _ff2
+        _vs = make_harvest_verifier("b", "/l", {}, budget=3, metric="ar")
+        assert _vs({"id": "SH", "pdps": 900, "edps": 0, "price": 2.0, "cur": "divine"}) is True
+        assert _mk == {"search": "ar", "fetch": "ar"}, _mk
+        globals()["search_min_dps"], globals()["fetch_ids"] = _fs, _ff
+
         _HARVEST_VERDICTS.clear()
         _v2 = make_harvest_verifier("b", "/l", {}, budget=8)
         assert _v2({"id": "EXISTS", "pdps": 100, "edps": 0, "price": 1.0, "cur": "divine"}) is True
