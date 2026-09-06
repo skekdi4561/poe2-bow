@@ -1,8 +1,13 @@
+// @updateURL / @downloadURL 이 없으면 한 번 깐 사람은 그 버전에 영원히 고정된다 —
+// 행 스키마가 바뀌면 옛 스크립트가 조용히 안 맞는 데이터를 보낸다. 이 두 줄이면 텀퍼몽키가
+// 알아서 갱신한다. @name 은 일부러 안 바꾼다 — 바꾸면 이미 깐 사람에게 별개 스크립트로 잡힌다.
 // ==UserScript==
 // @name         POE2 활 시세 채집기
 // @namespace    poe2-bow-appraiser
 // @version      0.2.1
-// @description  거래소에서 이미 보고 있는 활 매물을 주워 '활 시세 감정소'로 흘려보낸다. 추가 요청 0.
+// @description  거래소에서 이미 보고 있는 무기 매물을 주워 'PoE2 시세 감정소'로 흘려보낸다. 추가 요청 0.
+// @updateURL    https://skekdi4561.github.io/poe2-bow/poe2-bow-harvester.user.js
+// @downloadURL  https://skekdi4561.github.io/poe2-bow/poe2-bow-harvester.user.js
 // @match        https://poe.kakaogames.com/trade2/*
 // @match        http://localhost:8731/*
 // @match        http://127.0.0.1:8731/*
