@@ -53,6 +53,25 @@ const errors = [];
     errors.push('#tbl.arm .c-phys 숨김 규칙이 없다 — 방패에서 물리 열이 안 숨는다');
 }
 
+// 방패 화면에서 지표 이름이 'DPS' 로 굳어 있으면, 한 화면 안에서 같은 값을 두 이름으로 부른다.
+// 실행 시 만들어지는 문구(프리미엄·범례·툴팁·빈 상태)는 metricName() 을 거쳐야 한다.
+{
+  const script = html.slice(html.indexOf('<script>'));
+  const bad = [];
+  for (const [i, line] of script.split(/\r?\n/).entries()) {
+    const s = line.trim();
+    if (s.startsWith('//') || !/DPS/.test(s)) continue;
+    if (/throw new Error|console\.|assert/.test(s)) continue;   // 자체 테스트 내부 문구는 화면에 안 나간다
+    // 템플릿/문자열 안에서 화면에 나가는 'DPS' 만 본다. 주석·상수명·정규식은 뺀다.
+    if (!/['\"`]/.test(s)) continue;
+    if (/metricName|PER_DPS|COUNTED|isOffDps|th-dps|총 DPS|물리 DPS|원소 DPS/.test(s)) continue;
+    if (/거래소 DPS|DPS 곡선|DPS는 거래소/.test(s)) continue;   // 무기 설명문(방패에선 안 보임)
+    bad.push(`${i + 1}: ${s.slice(0, 90)}`);
+  }
+  if (bad.length) errors.push(`화면 문구에 지표 이름이 굳어 있다 — metricName() 을 쓸 것:
+    ${bad.join('\n    ')}`);
+}
+
 // 무기 목록이 세 벌(수집기·워커·이 페이지) 있는데 셋이 어긋나면 무기 탭 하나가 조용히
 // 빈 화면이 된다 — 수집기가 안 뜨거나, 워커가 크라우드를 거부하거나, 페이지가 없는 파일을 찾는다.
 // 지금까지 아무도 이 정합을 검사하지 않았다(부적이 09-05 에 추가된 최신 항목이라 딱 이 자리다).
@@ -64,7 +83,13 @@ const errors = [];
   // serve.py: ("weapon.bow", "", "활")  — 카테고리 id 와 접미사만 본다(라벨은 콘솔 전용)
   // 방패는 armour.shield 라 weapon.* 만 훑으면 놓친다
   const pyW = pick(block, /\("((?:weapon|armour)\.[a-z]+)",\s*"([a-z]*)"/g);
-  const wkW = [...wk.matchAll(/"((?:weapon|armour)\.[a-z]+)"/g)].map((m) => m[1]);
+  // CATEGORIES 블록만 훑는다. 파일 전체를 보면 76행의 기본값 "weapon.bow" 가 섞여서
+  // 허용목록에서 그 한 종을 지워도 집합이 그대로라 검사가 통과한다(실측).
+  const wkBlock = wk.slice(
+    wk.indexOf('CATEGORIES = new Set(['),
+    wk.indexOf(']', wk.indexOf('CATEGORIES = new Set([')),
+  );
+  const wkW = [...wkBlock.matchAll(/"((?:weapon|armour)\.[a-z]+)"/g)].map((m) => m[1]);
   const htmlW = pick(html, /\{ suffix: '([a-z]*)',\s*label: '([^']+)' \}/g).map((x) => x[0]);
 
   const pyIds = pyW.map((x) => x[0]).sort();

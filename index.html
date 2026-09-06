@@ -270,7 +270,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 
 <div class="card" id="budget-card">
   <h2>예산으로 살 수 있는 것</h2>
-  <p class="hint">예산을 정하면, 각 옵션을 고집할 때 DPS를 얼마나 포기하는지 나옵니다.
+  <p class="hint" id="budget-hint">예산을 정하면, 각 옵션을 고집할 때 DPS를 얼마나 포기하는지 나옵니다.
     위쪽은 값이 거의 안 붙으니 챙기고, 아래쪽은 그 DPS를 내고 살 만한지 따져보세요.</p>
   <div class="budgetbar">
     <input type="range" id="budget" min="0" max="1000" value="500"
@@ -390,7 +390,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   </details>
 </div>
 
-<footer>
+<footer id="method">
   DPS는 거래소 표기와 같은 방식(평균 피해 × 초당 공격)으로 계산합니다. 치명타·스킬 레벨·정확도는 그 식에 안 들어가므로 조건 슬라이더로 따로 겁니다. 서포트 젬·패시브·화살통 같은 캐릭터 쪽 배율은 무기마다 같으므로 순위를 바꾸지 않습니다. 정확한 최종 딜은 PoB2로 확인하세요.
 </footer>
 </div>
@@ -479,7 +479,7 @@ const UNIT_LABEL = { exalted: 'ex', chaos: 'chaos', divine: 'div', annul: 'annul
 let unit = 'auto';
 try {
   const u = localStorage.getItem('poe2unit');
-  if (u === 'auto' || (u && u in UNIT_LABEL)) unit = u;   // 모르는 값이면 자동으로 되돌린다
+  if (u === 'auto' || (u && Object.prototype.hasOwnProperty.call(UNIT_LABEL, u))) unit = u;   // 모르는 값이면 자동으로 되돌린다
 } catch (e) {}
 let unitAuto = 'exalted';                 // 자동일 때 실제로 고른 화폐
 
@@ -579,8 +579,20 @@ const COUNTED = [
   /^Adds \d|^(?:\S+ )?피해 \d+~\d+ 추가/i,   // 접두 조건('감전된 적에게 …')이 붙은 추가 피해는 거래소 DPS 밖
   /increased Attack Speed|reduced Attack Speed|^공격 속도 [\d.]+% (증가|감소)/i,
 ];
+// 방어구(방패)는 지표가 방어도라 세는 옵션이 다르다. 무기 목록을 그대로 쓰면
+// 방어도를 만드는 옵션들이 '방어도 밖 옵션' 1~4위를 차지하고, 프리미엄 패널이
+// "이 조건을 걸면 같은 방어도를 사는 데 +N 더 듭니다"라고 **정반대**를 말한다
+// (걸린 조건 자체가 방어도를 올리는 옵션이라 곡선이 위로 밀리는 게 당연하다).
+const COUNTED_ARM = [
+  /increased Armour(?!,)|^방어도 [\d.]+% 증가/i,
+  /increased Armour, Evasion and Energy Shield|^방어도, 회피, 에너지 보호막 [\d.]+% 증가/i,
+  /to Armour$|^방어도 \+?\d/i,
+];
 // 반드시 마크업을 벗긴 뒤 판별한다 — "[Physical|물리] 피해"는 "물리 피해"와 글자가 안 붙어 있다
-const isOffDps = m => !COUNTED.some(re => re.test(cleanMod(m)));
+const isOffDps = m => {
+  const c = cleanMod(m);
+  return !(isArmourCat() ? COUNTED_ARM : COUNTED).some(re => re.test(c));
+};
 // 곡선을 뜰 가치가 없는 옵션 — 수집기(serve.py)와 같은 기준으로 거른다.
 // 룬·베이스 고유 옵션은 "얼마를 더 내는가"의 답이 못 된다.
 // 수집기(serve.py)의 JUNK_PREFIX/WORDS/KEYS 와 같은 기준. 능력치는 착용 요구치용이라 뺀다.
@@ -721,6 +733,19 @@ function applyMetricLabels(){
   set('ladder-hint', `최전선에서 한 계단 올라갈 때, ${M} 10을 더 얻는 데 붙는 값. 가장 싼 계단에 표시가 붙습니다.`);
   set('th-per', `${M} 10당`);
   set('budget-sort', budgetDesc ? `${M} 높은 순` : `${M} 낮은 순`);
+  set('budget-hint', `예산을 정하면, 각 옵션을 고집할 때 ${M}를 얼마나 포기하는지 나옵니다. `
+    + `위쪽은 값이 거의 안 붙으니 챙기고, 아래쪽은 그 ${M}를 내고 살 만한지 따져보세요.`);
+  // 방법론 설명은 무기 전용이었다 — 방패 화면에서 "평균 피해 × 초당 공격" 은 틀린 말이다
+  set('method', arm
+    ? '방어도는 거래소 표기를 그대로 씁니다(베이스 + 방어도 옵션이 이미 반영된 값). 막기 확률·저항처럼 방어도에 안 들어가는 값은 조건 필터로 따로 겁니다. 정확한 최종 방어력은 PoB2로 확인하세요.'
+    : 'DPS는 거래소 표기와 같은 방식(평균 피해 × 초당 공격)으로 계산합니다. 치명타·스킬 레벨·정확도는 그 식에 안 들어가므로 조건 슬라이더로 따로 겁니다. 서포트 젬·패시브·화살통 같은 캐릭터 쪽 배율은 무기마다 같으므로 순위를 바꾸지 않습니다. 정확한 최종 딜은 PoB2로 확인하세요.');
+  set('filters-hint', arm
+    ? '방어도에 안 들어가는 옵션들입니다. 조건을 고르면 그 옵션만의 가격 곡선이 기준 곡선과 겹쳐 그려집니다. 여러 개를 겹쳐 고르면 전부 만족하는 매물만 남습니다.'
+    : '치명타·스킬 레벨처럼 거래소 DPS에 안 들어가는 옵션들입니다. 조건을 고르면 그 옵션만의 가격 곡선이 기준 곡선과 겹쳐 그려집니다. 여러 개를 겹쳐 고르면 전부 만족하는 매물만 남습니다.');
+  // 방패는 치확이 없다(전 매물 0) — 켜도 배율이 1이라 아무것도 안 하는 죽은 컨트롤이다
+  const critWrap = $('crit-on') && $('crit-on').closest('label');
+  if (critWrap) critWrap.style.display = arm ? 'none' : '';
+  if (arm && $('crit-on')) $('crit-on').checked = false;
   // 방패는 지표가 하나뿐이라 물리/원소 구분이 없다 — 비교 기준 자체를 숨기고 총으로 고정한다.
   const row = $('metric-row'), hint = $('metric-hint'), tbl = $('tbl');
   if (row) row.style.display = arm ? 'none' : '';
@@ -1153,7 +1178,7 @@ function render(){
   const byOption = base.length - view.length;
   $('filtered').textContent = [
     part.byRarity ? `희귀가 아닌 ${part.byRarity}개 제외` : '',
-    part.byMetric ? `지금 비교 기준으로는 DPS나 가격이 0인 ${part.byMetric}개 제외` : '',
+    part.byMetric ? `지금 비교 기준으로는 ${metricName()}나 가격이 0인 ${part.byMetric}개 제외` : '',
     part.byStale ? `수집한 지 24시간이 지난 ${part.byStale}개 제외` : '',
     active && byOption ? `옵션 조건으로 ${byOption}개 제외` : '',
   ].filter(Boolean).join(' · ');
@@ -1170,7 +1195,7 @@ function render(){
 
   // 비어 보이는 이유를 정확히 말한다 — 데이터가 없는 것과 조건이 다 걸러낸 것은 다르다
   $('empty').textContent = !bows.length ? '아직 등록된 무기가 없습니다.'
-    : !base.length ? `지금 비교 기준으로는 DPS가 0인 ${weaponLabel()}뿐입니다. 아래 “기준 설정”을 확인하세요.`
+    : !base.length ? `지금 비교 기준으로는 ${metricName()}가 0인 ${weaponLabel()}뿐입니다. 아래 “기준 설정”을 확인하세요.`
     : `조건에 맞는 ${weaponJosa('이', '가')} 없습니다. 문턱값을 낮춰보세요.`;
   $('empty').style.display = view.length ? 'none' : '';
   // 매물 한 줄의 "그 아이템 자체 수치". 무기는 공속·치확, 방패는 막기 확률 —
@@ -1305,7 +1330,7 @@ function premium(f, baseFront, active, thin, el = $('premium')){   // el: 자체
   if (!gaps.length) {
     el.className = 'premium none';
     el.textContent = f.length
-      ? '조건 매물과 기준 매물의 DPS 구간이 겹치지 않아 프리미엄을 잴 수 없습니다.'
+      ? `조건 매물과 기준 매물의 ${metricName()} 구간이 겹치지 않아 프리미엄을 잴 수 없습니다.`
       : '조건에 맞는 매물이 없습니다. 문턱값을 낮추거나 매물을 더 불러오세요.';
     return;
   }
@@ -1316,16 +1341,16 @@ function premium(f, baseFront, active, thin, el = $('premium')){   // el: 자체
   // 서로 다른 점이 하나뿐이면 그건 "곡선"이 아니다 — 곡선인 척 말하지 않는다
   if (distinctPts(f) < 2) {
     el.innerHTML = abs <= 0.01
-      ? `조건에 맞는 ${esc(weaponJosa('이', '가'))} <strong>1개</strong>뿐이고, 그게 같은 DPS 최저가입니다. `
-        + '다만 이 조건 때문에 더 싼 낮은 DPS 매물을 포기하고 있을 수 있으니 아래 표도 보세요.'
-      : `조건에 맞는 ${esc(weaponJosa('이', '가'))} <strong>1개</strong>뿐입니다 — 같은 DPS 최저가보다 `
+      ? `조건에 맞는 ${esc(weaponJosa('이', '가'))} <strong>1개</strong>뿐이고, 그게 같은 ${metricName()} 최저가입니다. `
+        + `다만 이 조건 때문에 더 싼 낮은 ${metricName()} 매물을 포기하고 있을 수 있으니 아래 표도 보세요.`
+      : `조건에 맞는 ${esc(weaponJosa('이', '가'))} <strong>1개</strong>뿐입니다 — 같은 ${metricName()} 최저가보다 `
         + `<strong>+${money(abs)}</strong> 비쌉니다. 곡선을 그리려면 매물이 더 필요합니다.`;
     if (thin) el.innerHTML += THIN;
     return;
   }
   el.innerHTML = abs <= 0.01
-    ? '이 조건은 <strong>값을 거의 안 올립니다</strong> — 같은 DPS를 같은 가격에 살 수 있으니 걸어도 손해가 없습니다.'
-    : `이 조건을 걸면 같은 DPS를 사는 데 <strong>+${money(abs)}</strong> `
+    ? `이 조건은 <strong>값을 거의 안 올립니다</strong> — 같은 ${metricName()}를 같은 가격에 살 수 있으니 걸어도 손해가 없습니다.`
+    : `이 조건을 걸면 같은 ${metricName()}를 사는 데 <strong>+${money(abs)}</strong> `
       + `(약 <strong>+${fmt(pct, 0)}%</strong>) 더 듭니다.`;
   if (thin) el.innerHTML += THIN;
 }
@@ -1373,14 +1398,14 @@ function chart(base, view, front, baseFront){
     const on = front.has(b), dim = !inView.has(b);
     return `<circle class="dot ${on ? 'front' : ''}" cx="${X(b.d)}" cy="${Y(b.p)}" r="${on ? 5 : 3.5}"`
       + `${dim ? ' opacity="0.28"' : ''}>`
-      + `<title>${esc(b.name || '')} · DPS ${fmt(b.d)} · ${money(b.p)}</title></circle>`;
+      + `<title>${esc(b.name || '')} · ${metricName()} ${fmt(b.d)} · ${money(b.p)}</title></circle>`;
   }).join('');
 
-  $('chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="DPS 대비 가격 산점도">
+  $('chart').innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${metricName()} 대비 가격 산점도">
     ${grid}<line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>${xt}
     ${baseFront ? path(baseFront, 'baseline') : ''}${path([...front], 'frontline')}${dots}
     </svg>`;   // 축 단위는 카드 설명문이 이미 말해준다 — 여기 넣으면 눈금 숫자와 겹친다
-  $('legend').innerHTML = `<span><i class="sel"></i>가로축 DPS · 세로축 가격(${esc(UNIT_LABEL[activeUnit()] || activeUnit())})${logY ? ' 로그' : ''}</span>`
+  $('legend').innerHTML = `<span><i class="sel"></i>가로축 ${metricName()} · 세로축 가격(${esc(UNIT_LABEL[activeUnit()] || activeUnit())})${logY ? ' 로그' : ''}</span>`
     + (baseFront ? '<span><i class="base"></i>조건 없을 때</span>' : '');
 }
 
@@ -1475,7 +1500,7 @@ $('trade-go').addEventListener('click', async () => {
     const fresh = freshRows(d);
     if (!fresh.length) {
       status(`가져올 매물이 없습니다 (검색 결과 ${d.total || 0}개`
-        + (d.skipped ? `, ${d.skipped}개는 가격이나 DPS가 없어 제외` : '')
+        + (d.skipped ? `, ${d.skipped}개는 가격이나 ${metricName()}가 없어 제외` : '')
         + '). 기존 목록은 그대로 뒀습니다.');
       return;
     }
@@ -1483,7 +1508,7 @@ $('trade-go').addEventListener('click', async () => {
     bows = bows.concat(fresh);
     save(); refresh();
     status(`${fresh.length}개 불러옴 (검색 결과 ${d.total}개`
-      + (d.skipped ? `, ${d.skipped}개는 가격이나 DPS가 없어 제외` : '') + ')');
+      + (d.skipped ? `, ${d.skipped}개는 가격이나 ${metricName()}가 없어 제외` : '') + ')');
   } catch (e) {
     status('불러오기 실패: ' + e.message);
   } finally {
@@ -1861,6 +1886,10 @@ async function selectWeapon(suffix){
   curWeapon = suffix;
   const w = WEAPONS.find(x => x.suffix === suffix) || WEAPONS[0];
   $('weapon-name').textContent = w.label;
+  // 이전 무기의 스냅샷 부산물을 먼저 비운다. 안 비우면 아직 수집 안 된 무기를 골랐을 때
+  // 조건 목록에 이전 무기의 '측정' 조건이 딱지를 단 채 남고, 누르면 0건이 되어
+  // "없는 데이터"를 "있는데 조건에 안 맞는 것"처럼 말한다.
+  snapConds = []; snapLeague = '';
   applyMetricLabels();          // 방패면 DPS 문구가 방어도로 바뀐다(안 부르면 그대로 남는다)
   if (suffix === '') {                                  // 활: 저장분 복원 + 스냅샷 + 채집기
     bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
