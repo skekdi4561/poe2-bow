@@ -1175,10 +1175,18 @@ function render(){
   $('empty').style.display = view.length ? 'none' : '';
   // 매물 한 줄의 "그 아이템 자체 수치". 무기는 공속·치확, 방패는 막기 확률 —
   // 둘 다 거래소가 아이템 속성으로 주는 **최종값**(베이스 + 로컬 증가 반영)이다.
-  // 0 은 '0%'가 아니라 '못 읽었다'는 뜻이라 '—' 로 쓴다(실측: 몽환의 육척봉 76개 중 69개가 치확 0).
+  //
+  // 치확 0 은 '못 읽었다'가 아니라 진짜 0 이므로 숫자를 그대로 쓴다. 한때 '—' 로 바꿨다가
+  // 되돌렸다 — 몽환의 육척봉(Dreaming Quarterstaff)·매끄러운 육척봉(Smooth Quarterstaff)이
+  // **베이스 치확 0% 인 실제 베이스**였고 거래소도 파서도 처음부터 맞았다. 오히려 '—' 가
+  // "0% 라서 절대 크리가 안 터지는 무기"를 "모르는 값"으로 감춰서 더 나빴다.
+  // 근거: 수집 데이터 86종 2,227개에서 (치확 − 치명타 옵션 합)이 베이스마다 상수이고
+  // 흔들리는 베이스가 0종 — 그 상수가 두 베이스에서만 0 이었고 외부 DB 두 곳이 0.00% 확인.
+  //
+  // 막기의 '—' 는 다르다. 막기는 값이 있으면 반드시 양수라(방패 실측 26~33) 0/없음이 곧 미수집이다.
   const statLine = b => isArmourCat()
     ? `막기 ${b.block ? fmt(b.block, 0) + '%' : '—'}`
-    : `${fmt(b.aps, 2)} aps · 치명 ${b.crit ? fmt(b.crit, 2) + '%' : '—'}`;
+    : `${fmt(b.aps, 2)} aps · 치명 ${fmt(b.crit || 0, 2)}%`;
   $('rows').innerHTML = view.map(b => {
     const chips = Object.entries(b.offs).slice(0, 3)
       .map(([k, v]) => `<span class="pill note">${esc(shortMod(k, v))}</span>`).join('');
