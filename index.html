@@ -1,11 +1,11 @@
 <meta charset="utf-8">
 <title>공격 무기 시세 감정소</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="POE2 공격 무기 7종(활·석궁·한손 철퇴·양손 철퇴·창·육척봉·부적), 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없이 보는 가격 곡선.">
+<meta name="description" content="POE2 공격 무기 7종 + 방패, 이 예산으로 살 수 있는 최고 DPS·방어도는? 설치·로그인 없이 보는 가격 곡선.">
 <link rel="icon" href="favicon.png">
 <meta property="og:type" content="website">
 <meta property="og:title" content="공격 무기 시세 감정소">
-<meta property="og:description" content="POE2 공격 무기 — 이 예산으로 살 수 있는 최고 DPS는? 설치·로그인 없음, 미리 떠둔 시세만 보여줍니다.">
+<meta property="og:description" content="POE2 공격 무기와 방패 — 이 예산으로 살 수 있는 최고 DPS·방어도는? 설치·로그인 없음, 미리 떠둔 시세만 보여줍니다.">
 <meta property="og:url" content="https://skekdi4561.github.io/poe2-bow/">
 <meta property="og:image" content="https://skekdi4561.github.io/poe2-bow/og.png">
 <meta property="og:image:width" content="1200">
@@ -282,7 +282,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   <div class="hero">
     <div>
       <div class="filt-head">
-        <h2>DPS 밖 옵션</h2>
+        <h2 id="h-offopt">DPS 밖 옵션</h2>
         <span class="count" id="match-count"></span>
       </div>
       <p class="hint" id="filters-hint">치명타·스킬 레벨처럼 거래소 DPS에 안 들어가는 옵션들입니다. 조건을 고르면 그 옵션만의 가격 곡선이 기준 곡선과 겹쳐 그려집니다. 여러 개를 겹쳐 고르면 전부 만족하는 매물만 남습니다.</p>
@@ -299,8 +299,8 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 </div>
 
 <div class="card">
-  <h2>DPS 10당 가격</h2>
-  <p class="hint">최전선에서 한 계단 올라갈 때, DPS 10을 더 얻는 데 붙는 값. 가장 싼 계단에 표시가 붙습니다.</p>
+  <h2 id="h-ladder">DPS 10당 가격</h2>
+  <p class="hint" id="ladder-hint">최전선에서 한 계단 올라갈 때, DPS 10을 더 얻는 데 붙는 값. 가장 싼 계단에 표시가 붙습니다.</p>
   <ul class="ladder" id="ladder"></ul>
 </div>
 
@@ -309,8 +309,8 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
   <div class="tablewrap">
     <table>
       <thead><tr>
-        <th>무기</th><th>물리</th><th>원소</th><th id="th-dps">총 DPS</th>
-        <th>DPS 밖 옵션</th><th id="th-price">가격</th><th>DPS 10당</th><th>판정</th><th></th>
+        <th>무기</th><th id="th-phys">물리</th><th id="th-ele">원소</th><th id="th-dps">총 DPS</th>
+        <th id="th-offopt">DPS 밖 옵션</th><th id="th-price">가격</th><th id="th-per">DPS 10당</th><th>판정</th><th></th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -351,10 +351,10 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 
   <details class="card">
     <summary>기준 설정</summary>
-    <p class="hint" style="margin-top:12px">빌드에 따라 무엇이 DPS인지 다릅니다 — 물리 스케일링이면 물리 DPS로 보세요.
+    <p class="hint" id="metric-hint" style="margin-top:12px">빌드에 따라 무엇이 DPS인지 다릅니다 — 물리 스케일링이면 물리 DPS로 보세요.
       총 DPS는 <strong>물리 + 원소</strong>입니다. 카오스는 공격 빌드가 안 쓰므로 세지 않습니다.</p>
     <div class="row two">
-      <div>
+      <div id="metric-row">
         <label for="metric">비교 기준</label>
         <select id="metric">
           <option value="total">총 DPS</option>
@@ -696,10 +696,37 @@ const WEAPONS = [
   { suffix: 'spear',    label: '창' },
   { suffix: 'warstaff', label: '육척봉' },
   { suffix: 'talisman', label: '부적' },
+  // 방패는 무기가 아니다 — 지표가 DPS 가 아니라 방어도라서 화면 문구가 갈린다(metricName).
+  { suffix: 'shield',   label: '방패' },
 ];
 const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
 // 화면 문구에 쓰는 "지금 보고 있는 무기" 이름. 예전엔 문구가 전부 활로 굳어 있어서
 // 창이나 부적을 보는 중에도 활 얘기를 읽게 됐다.
+// 이 무기 종류에서 "높을수록 좋은 값"의 이름. 무기는 DPS, 방패는 방어도.
+// 수집기 metric_of() 와 짝 — 거기서 거래소에 ar 로 물어보고 여기서 방어도로 부른다.
+const isArmourCat = () => curWeapon === 'shield';
+const metricName = () => isArmourCat() ? '방어도' : 'DPS';
+
+// 지표 이름이 들어간 화면 문구를 한 번에 갈아끼운다. 무기를 바꿀 때마다 부른다 —
+// 안 하면 방패를 보면서 "총 DPS"·"DPS 10당" 을 읽게 된다.
+function applyMetricLabels(){
+  const M = metricName(), arm = isArmourCat();
+  const set = (id, t) => { const el = $(id); if (el) el.textContent = t; };
+  set('h-offopt', `${M} 밖 옵션`);
+  set('th-offopt', `${M} 밖 옵션`);
+  set('h-ladder', `${M} 10당 가격`);
+  set('ladder-hint', `최전선에서 한 계단 올라갈 때, ${M} 10을 더 얻는 데 붙는 값. 가장 싼 계단에 표시가 붙습니다.`);
+  set('th-per', `${M} 10당`);
+  set('budget-sort', budgetDesc ? `${M} 높은 순` : `${M} 낮은 순`);
+  // 방패는 지표가 하나뿐이라 물리/원소 구분이 없다 — 비교 기준 자체를 숨기고 총으로 고정한다.
+  const row = $('metric-row'), hint = $('metric-hint'), ph = $('th-phys'), pe = $('th-ele');
+  if (row) row.style.display = arm ? 'none' : '';
+  if (hint) hint.style.display = arm ? 'none' : '';
+  if (ph) ph.style.display = arm ? 'none' : '';
+  if (pe) pe.style.display = arm ? 'none' : '';
+  if (arm && $('metric')) $('metric').value = 'total';
+}
+
 function weaponLabel(){
   return (WEAPONS.find(w => w.suffix === curWeapon) || WEAPONS[0]).label;
 }
@@ -1081,7 +1108,7 @@ function renderBudget(all){
     return `<li class="${i === 0 ? 'baserow' : ''}">
       <span class="nm">${esc(r.label)}${r.kind ? `<em>${esc(r.kind)}</em>` : ''}</span>
       <span class="track"><span class="fill" style="width:${(r.dps / maxDps * 100).toFixed(1)}%"></span></span>
-      <span class="dps num">${fmt(r.dps, 0)} DPS</span>
+      <span class="dps num">${fmt(r.dps, 0)} ${metricName()}</span>
       <span class="gap num ${gap != null && gap < -1 ? 'bad' : ''}">${
         i === 0 || gap == null ? '기준' : (gap >= -0.5 ? '동일' : fmt(gap, 0))}</span>
     </li>`;
@@ -1095,13 +1122,14 @@ $('budget').addEventListener('input', e => {
 });
 $('budget-sort').addEventListener('click', () => {
   budgetDesc = !budgetDesc;
-  $('budget-sort').textContent = budgetDesc ? 'DPS 높은 순' : 'DPS 낮은 순';
+  $('budget-sort').textContent = `${metricName()} ${budgetDesc ? '높은 순' : '낮은 순'}`;
   render();
 });
 
 function render(){
   $('crit-row').style.display = $('crit-on').checked ? '' : 'none';
-  $('th-dps').textContent = $('crit-on').checked ? '총 DPS (치명 반영)' : '총 DPS';
+  $('th-dps').textContent = isArmourCat() ? '방어도'
+    : ($('crit-on').checked ? '총 DPS (치명 반영)' : '총 DPS');
 
   const part = partition();
   const all = part.base.sort((a, b) => a.p / a.d - b.p / b.d);
@@ -1171,8 +1199,8 @@ function render(){
   $('ladder').innerHTML = steps.length ? steps.map(s => `
     <li class="${s.unit === cheapest ? 'knee' : ''}">
       <span class="step">${esc(s.from.name || '?')} → <strong>${esc(s.to.name || '?')}</strong>
-        <span class="sub num">DPS +${fmt(s.dd)} · ${money(s.dp)} 추가</span></span>
-      <span class="cost num">${perDps(s.unit)}<small>DPS 10당</small></span>
+        <span class="sub num">${metricName()} +${fmt(s.dd)} · ${money(s.dp)} 추가</span></span>
+      <span class="cost num">${perDps(s.unit)}<small>${metricName()} 10당</small></span>
     </li>`).join('')
     : `<li><span class="step">최전선에 ${esc(weaponJosa('이', '가'))} 2개 이상 있어야 계단이 나옵니다.</span></li>`;
 
@@ -1817,6 +1845,7 @@ async function selectWeapon(suffix){
   curWeapon = suffix;
   const w = WEAPONS.find(x => x.suffix === suffix) || WEAPONS[0];
   $('weapon-name').textContent = w.label;
+  applyMetricLabels();          // 방패면 DPS 문구가 방어도로 바뀐다(안 부르면 그대로 남는다)
   if (suffix === '') {                                  // 활: 저장분 복원 + 스냅샷 + 채집기
     bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
     refresh();

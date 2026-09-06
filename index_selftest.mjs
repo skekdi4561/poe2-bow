@@ -41,14 +41,18 @@ const errors = [];
   const wk = fs.readFileSync('worker/src/index.js', 'utf8');
   const block = py.slice(py.indexOf('ATTACK_WEAPONS = ['), py.indexOf(']', py.indexOf('ATTACK_WEAPONS = [')));
   // serve.py: ("weapon.bow", "", "활")  — 카테고리 id 와 접미사만 본다(라벨은 콘솔 전용)
-  const pyW = pick(block, /\("(weapon\.[a-z]+)",\s*"([a-z]*)"/g);
-  const wkW = [...wk.matchAll(/"(weapon\.[a-z]+)"/g)].map((m) => m[1]);
+  // 방패는 armour.shield 라 weapon.* 만 훑으면 놓친다
+  const pyW = pick(block, /\("((?:weapon|armour)\.[a-z]+)",\s*"([a-z]*)"/g);
+  const wkW = [...wk.matchAll(/"((?:weapon|armour)\.[a-z]+)"/g)].map((m) => m[1]);
   const htmlW = pick(html, /\{ suffix: '([a-z]*)',\s*label: '([^']+)' \}/g).map((x) => x[0]);
 
   const pyIds = pyW.map((x) => x[0]).sort();
   const wkIds = [...new Set(wkW)].sort();
-  if (pyIds.join(',') !== wkIds.join(','))
-    errors.push(`무기 목록 불일치 — serve.py [${pyIds}] vs worker [${wkIds}]`);
+  // 워커는 **크라우드로 들어오는 것만** 받으면 된다(방패는 앱이 안 보낸다) — 부분집합이면 맞다.
+  // 반대로 워커에만 있는 id 는 오타이거나 수집기에서 빠진 것이라 반드시 걸러야 한다.
+  const orphan = wkIds.filter((i) => !pyIds.includes(i));
+  if (orphan.length)
+    errors.push(`워커에만 있는 무기 id — serve.py 에 없음: [${orphan}]`);
 
   const pySfx = pyW.map((x) => x[1]).sort();
   const htmlSfx = [...htmlW].sort();

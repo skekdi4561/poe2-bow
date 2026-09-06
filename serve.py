@@ -305,7 +305,17 @@ def round1(x):
     return int((x or 0) * 10 + 0.5) / 10
 
 
-def normalize(res):
+def metric_of(category):
+    """그 아이템 종류에서 "높을수록 좋은" 값의 거래소 필드 이름.
+
+    무기는 DPS, 방패는 방어도(ar)다. 거래소가 둘을 같은 블록에 두고 있어서
+    (equipment_filters.filters.dps / .ar) 검색·정렬·필터가 이름만 바뀌면 그대로 통한다.
+    ATTACK_WEAPONS 튜플을 늘리지 않고 여기서 유도한다 — 늘리면 언팩하는 자리가 다 깨진다.
+    """
+    return "ar" if str(category or "").startswith("armour.") else "dps"
+
+
+def normalize(res, metric="dps"):
     item = res.get("item") or {}
     listing = res.get("listing") or {}
     price = listing.get("price") or {}
@@ -316,9 +326,18 @@ def normalize(res):
     if cur not in PRICE_CURRENCIES:
         return None                # 실거래 화폐 넷 밖은 버린다 — 환율을 못 믿으면 곡선이 틀어진다
     ext = item.get("extended") or {}
-    pdps, edps = ext.get("pdps"), ext.get("edps")
-    if pdps is None and edps is None:
-        return None                                    # 활이 아니거나 GGG가 DPS를 안 준 항목
+    if metric == "dps":
+        pdps, edps = ext.get("pdps"), ext.get("edps")
+        if pdps is None and edps is None:
+            return None                                # 무기가 아니거나 GGG가 DPS를 안 준 항목
+    else:
+        # 무기 아닌 종류(방패=방어도)는 지표가 하나뿐이다. (pdps, edps) 쌍은 이 스키마에서
+        # "(주 지표, 부 지표)" 자리이므로 주 지표에 담고 부 지표는 0 으로 둔다 — 그래야
+        # 최전선·탐침·추세·크라우드 게이트가 손 안 대고 그대로 돈다(전부 pdps+edps 를 본다).
+        # 화면은 카테고리로 라벨을 갈아 끼운다(DPS ↔ 방어도). 물리/원소 탭은 방패에서 숨긴다.
+        pdps, edps = ext.get(metric), 0
+        if pdps is None:
+            return None                                # 그 종류가 아니거나 값이 없는 항목
     name = " ".join(x for x in (item.get("name"), item.get("typeLine") or item.get("baseType")) if x)
     return {
         "id": str(res.get("id") or ""),
@@ -334,18 +353,19 @@ def normalize(res):
     }
 
 
-def search_min_dps(base, league_path, query, lo, sort=None):
-    """dps >= lo 검색. 기본은 가격 오름차순 — 첫 결과가 곧 그 문턱값의 최전선 점이다.
+def search_min_dps(base, league_path, query, lo, sort=None, metric="dps"):
+    """<지표> >= lo 검색. 기본은 가격 오름차순 — 첫 결과가 곧 그 문턱값의 최전선 점이다.
     sort 를 주면 그대로 쓴다(예: {"dps": "desc"} = DPS 높은 순).
+    metric 은 거래소 equipment_filters 의 필드 이름 — 무기 "dps", 방패 "ar"(방어도).
     """
     import copy
     q = copy.deepcopy(query)
     if lo is not None:
-        q.setdefault("filters", {}).setdefault("equipment_filters", {})      .setdefault("filters", {})["dps"] = {"min": lo}
+        q.setdefault("filters", {}).setdefault("equipment_filters", {})      .setdefault("filters", {})[metric] = {"min": lo}
     return api_get(base + league_path, {"query": q, "sort": sort or {"price": "asc"}})
 
 
-def search_top_dps(base, league_path, query, lo=None):
+def search_top_dps(base, league_path, query, lo=None, metric="dps"):
     """DPS 내림차순 검색 = 시장 최상위 매물. 거래소 웹 UI 의 DPS 정렬과 같은 것.
 
     이게 있어야 "지금 시장 최고가 몇 DPS 인가"를 정확히 알 수 있다. 밴딩만으로는
@@ -357,10 +377,10 @@ def search_top_dps(base, league_path, query, lo=None):
     # 활 기준으로 잡은 값(400)이 저DPS 무기 클래스를 통째로 배제한다 —
     # 실측: 같은 질의문에 검/도끼/단검이 "시장 0개"였고 문턱이 유일한 차이였다.
     # 무기마다 DPS 스케일이 다르므로(쿼터스태프 2025 vs 단검) 고정 문턱은 원리적으로 못 맞춘다.
-    return search_min_dps(base, league_path, query, lo, sort={"dps": "desc"})
+    return search_min_dps(base, league_path, query, lo, sort={metric: "desc"}, metric=metric)
 
 
-def fetch_ids(base, query_id, ids):
+def fetch_ids(base, query_id, ids, metric="dps"):
     out = []
     for i in range(0, len(ids), FETCH_BATCH):
         throttle("fetch")
@@ -368,7 +388,7 @@ def fetch_ids(base, query_id, ids):
                        % (base, ",".join(ids[i:i + FETCH_BATCH]), query_id))
         for res in data.get("result") or []:
             if res:
-                row = normalize(res)
+                row = normalize(res, metric)
                 if row:
                     out.append(row)
         time.sleep(PAUSE)
@@ -900,6 +920,9 @@ ATTACK_WEAPONS = [
     ("weapon.spear",     "spear",    "창"),          # 베이스 36, 최고 1294
     ("weapon.warstaff",  "warstaff", "육척봉"),  # 베이스 36, 최고 2025
     ("weapon.talisman",  "talisman", "부적"),     # 베이스 28
+    # 방패는 무기가 아니라 방어구다 — 지표가 DPS 가 아니라 방어도(ar)라서 metric_of 가 가른다.
+    # 방패의 벽(Shield Wall) 빌드가 방패 방어도를 최우선으로 본다(사용자 확인, 2026-09-06).
+    ("armour.shield",    "shield",   "방패"),     # 베이스 130
 ]
 # POE2 에 아직 없는 공격 무기 — 출시되면 위 목록으로 옮기면 그대로 수집된다.
 # (id 는 EE2 CATEGORY_TO_TRADE_ID 확인분이라 그대로 쓰면 된다)
@@ -962,7 +985,7 @@ def probe_levels(cut, n=None, floor=None, shape=None):
     return out
 
 
-def load_frontier_probe(base, league_path, query, seen_ids=(), levels=None):
+def load_frontier_probe(base, league_path, query, seen_ids=(), levels=None, metric="dps"):
     """문턱마다 "DPS ≥ 문턱, 가격 오름차순" 검색의 가장 싼 PROBE_TAKE 개 — 그 문턱의 최전선 점.
 
     문턱은 **내림차순**이다(probe_levels 가 cut 아래로 놓는다). 낮은 문턱은 높은 문턱의
@@ -974,7 +997,7 @@ def load_frontier_probe(base, league_path, query, seen_ids=(), levels=None):
     for lo in (levels if levels is not None else []):
         throttle("search")
         try:
-            r = search_min_dps(base, league_path, query, lo)
+            r = search_min_dps(base, league_path, query, lo, metric=metric)
         except TradeError as e:
             print("     탐침 %d+ 실패: %s" % (lo, e))
             continue
@@ -1004,10 +1027,13 @@ def load_top_dps(page_url, category=None):
     base, league_path, league, query = resolve_search(page_url)
     if category:
         query = with_category(query, category)
+    # 지표는 카테고리가 정한다 — 무기는 DPS, 방패는 방어도. 검색·정렬·필터·탐침이 다 이걸 쓴다.
+    metric = metric_of(category)
+    label = "DPS" if metric == "dps" else "방어도"
 
     throttle("search")
     try:
-        r = search_top_dps(base, league_path, query)
+        r = search_top_dps(base, league_path, query, metric=metric)
         how = "정렬"
     except TradeError as e:
         # 정렬을 거부하는 서버/리그가 있을 수 있다. 그때도 "상위만" 원칙은 지켜야 하므로
@@ -1016,11 +1042,11 @@ def load_top_dps(page_url, category=None):
         # 지난 리그 축척이라, 새 리그 시장(최고 393~690)에서는 이 폴백이 **반드시 0건**이었다.
         # 그러면 그 무기는 "수집 0개"로 조용히 멈춘다 — 안전망이 있는 척만 하는 상태였다.
         # 하한(THRESHOLDS[0]=400)이 있으므로 "아래 구간으로 내려가지 않는다"는 원칙은 그대로다.
-        print("     DPS 정렬 실패 — 문턱 밴드로 대체: %s" % e)
+        print("     %s 정렬 실패 — 문턱 밴드로 대체: %s" % (label, e))
         r, lo = None, THRESHOLDS[-1]
         for lo in reversed(THRESHOLDS):
             throttle("search")
-            r = search_min_dps(base, league_path, query, lo)
+            r = search_min_dps(base, league_path, query, lo, metric=metric)
             if r.get("total"):
                 break                       # 매물이 있는 최상단 밴드
         how = "밴드 %d+" % lo
@@ -1039,12 +1065,12 @@ def load_top_dps(page_url, category=None):
         _st = query.get("stats") or []
         if _st:
             print("     [진단] stats: %s" % json.dumps(_st, ensure_ascii=False)[:400])
-    rows = fetch_ids(base, r["id"], ids) if ids else []
+    rows = fetch_ids(base, r["id"], ids, metric=metric) if ids else []
     # normalize() 가 되돌린 것 = 가격 화폐가 PRICE_CURRENCIES 밖이거나 GGG 가 DPS 를 안 준 매물.
     skipped = len(ids) - len(rows)
     best = max((x["pdps"] + x["edps"] for x in rows), default=0)
-    print("     DPS 상위권(%s): 시장 %s개 중 %d개 수집 — 최고 %.0f DPS%s"
-          % (how, total, len(rows), best,
+    print("     %s 상위권(%s): 시장 %s개 중 %d개 수집 — 최고 %.0f %s%s"
+          % (label, how, total, len(rows), best, label,
              "" if not skipped else " (제외 %d)" % skipped))
     # 문턱은 이번 사이클 상위 100개의 DPS 하한에서 유도한다 — 시장이 커지든 작아지든 따라간다.
     # 단순 최소값을 쓰면 **한 줄이 문턱 전체를 망친다**: 거래소는 DPS 정렬에 카오스 피해를
@@ -1061,7 +1087,8 @@ def load_top_dps(page_url, category=None):
     if _levels:
         print("     탐침 문턱(상위 %d개 하한 %.0f 기준): %s" % (len(rows), _cut, _levels))
     probe = load_frontier_probe(base, league_path, query,
-                                seen_ids=[x.get("id") for x in rows], levels=_levels)
+                                seen_ids=[x.get("id") for x in rows], levels=_levels,
+                                metric=metric)
     if probe:
         print("     최전선 탐침: %d개 추가 — 최저 %.0f DPS"
               % (len(probe), min(x["pdps"] + x["edps"] for x in probe)))
@@ -2223,44 +2250,44 @@ def demo():
         _searches = []
         globals()["throttle"] = lambda b, mw=None: None
         globals()["resolve_search"] = lambda u: ("https://h", "/api/trade2/search/poe2/L", "L", {})
-        globals()["search_top_dps"] = lambda b, lp, q, lo=None: (
+        globals()["search_top_dps"] = lambda b, lp, q, lo=None, **kw: (
             _searches.append("top") or {"id": "q", "total": 7, "result": ["a", "b", "c"]})
-        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
+        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None, **kw: (
             _searches.append("band") or {"id": "q", "total": 7, "result": ["a", "b", "c"]})
         # 셋을 달라 했는데 하나만 살아 돌아옴 (화폐가 규격 밖이거나 DPS 가 없어서)
-        globals()["fetch_ids"] = lambda b, qid, ids: (
+        globals()["fetch_ids"] = lambda b, qid, ids, **kw: (
             [{"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0}] if ids else [])
-        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None: []
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None, **kw: []
         rows, total, skipped, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
         assert len(rows) == 1, rows
         assert skipped == 2, "버려진 매물을 안 셌다: %r" % skipped
         assert total == 7, total
         assert _searches == ["top"], "정렬 1회 말고 다른 검색이 나갔다: %r" % _searches
         # 탐침 행은 TOP100 뒤에 그대로 합쳐진다(탐침 자체의 동작은 별도 단위 테스트)
-        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None: [
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None, **kw: [
             {"price": 1, "cur": "divine", "pdps": 400.0, "edps": 0.0, "id": "p1"}]
         _rows2, _, _, _, _ = load_top_dps("https://h/trade2/search/poe2/L/x")
         assert len(_rows2) == 2 and _rows2[-1]["pdps"] == 400.0, _rows2
-        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None: []
+        globals()["load_frontier_probe"] = lambda b, lp, q, seen_ids=(), levels=None, **kw: []
 
-        globals()["fetch_ids"] = lambda b, qid, ids: [
+        globals()["fetch_ids"] = lambda b, qid, ids, **kw: [
             {"price": 1, "cur": "divine", "pdps": 900.0, "edps": 100.0} for i in ids]
         assert load_top_dps("https://h/trade2/search/poe2/L/x")[2] == 0   # 전부 살아 오면 0
 
         # 정렬을 거부당하면 최상단 밴드로만 대체한다 — 아래 구간으로 내려가지 않는다
         _searches.clear()
         _bands = []
-        def _no_sort(b, lp, q, lo=None):
+        def _no_sort(b, lp, q, lo=None, **kw):
             raise TradeError("거래소 응답 400: unknown sort")
         globals()["search_top_dps"] = _no_sort
-        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
+        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None, **kw: (
             _bands.append(lo) or {"id": "q", "total": 7, "result": ["a"]})
         load_top_dps("https://h/trade2/search/poe2/L/x")
         assert _bands == [THRESHOLDS[-1]], "매물이 있으면 첫 밴드에서 멈춰야 한다: %r" % _bands
         # 최상단 밴드가 비면(새 리그처럼 시장 최고 DPS 가 낮으면) 매물이 있는 밴드까지 내려간다 —
         # 예전엔 여기서 0건을 받고 그대로 끝나 그 무기가 조용히 멈췄다.
         _bands.clear()
-        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None: (
+        globals()["search_min_dps"] = lambda b, lp, q, lo, sort=None, **kw: (
             _bands.append(lo) or ({"id": "q", "total": 0, "result": []} if lo > 600
                                   else {"id": "q", "total": 7, "result": ["a"]}))
         load_top_dps("https://h/trade2/search/poe2/L/x")
@@ -2638,14 +2665,14 @@ def demo():
     # 문턱이 내림차순이라 낮은 쪽이 상위집합 — 중간에 끊지 않는다(끊으면 아래 대역을 통째로 잃는다).
     _kp = (globals()["search_min_dps"], globals()["fetch_ids"], globals()["throttle"])
     _probe_calls, _fetched = [], []
-    def _ps(base, lp, q, lo, sort=None):
+    def _ps(base, lp, q, lo, sort=None, **kw):
         _probe_calls.append(lo)
         if lo == 182:
             raise TradeError("일시 실패")
         if lo == 145:
             return {"id": "Q", "result": ["210-0"]}     # 이미 뜬 것뿐 — 이 문턱만 건너뛴다
         return {"id": "Q", "result": ["%d-%d" % (lo, i) for i in range(15)]}   # 문턱당 15개 응답
-    def _pf(base, qid, ids):
+    def _pf(base, qid, ids, **kw):
         _fetched.append(list(ids))
         return [{"id": i, "pdps": float(i.split("-")[0]), "edps": 0.0} for i in ids]
     try:
@@ -2839,7 +2866,7 @@ def demo():
     keep_api, keep_fetch, keep_thr = api_get, fetch_ids, throttle
     globals()["api_get"] = lambda u, payload=None, _retried=False: (
         sent.append(payload) or {"id": "q", "total": 0, "result": []})
-    globals()["fetch_ids"] = lambda *a: []
+    globals()["fetch_ids"] = lambda *a, **kw: []
     globals()["throttle"] = lambda b: None
     try:
         sweep_condition("https://h", "/p", saved_q, {"id": "explicit.우리것", "min": 2, "label": "x"})
@@ -3053,11 +3080,11 @@ def demo():
     try:
         _net = {"search": 0}
         globals()["throttle"] = lambda bk, mw=None: None
-        def _fs(base, lp, q, lo):
+        def _fs(base, lp, q, lo, **kw):
             _net["search"] += 1
             _net["lo"] = lo                            # 검색 문턱을 기록 — 아래서 행의 DPS 와 대조
             return {"id": "Q", "result": ["EXISTS"]}
-        def _ff(base, qid, ids):
+        def _ff(base, qid, ids, **kw):
             return [{"price": 1.0, "cur": "divine"}] if ids == ["EXISTS"] else []
         globals()["search_min_dps"] = _fs
         globals()["fetch_ids"] = _ff
@@ -3083,7 +3110,7 @@ def demo():
         assert _net["lo"] == int(123.4 + 56.7) == 180, _net
         # 일시 실패(TradeError)는 캐시하지 않는다 — 다음 사이클에 다시 본다
         _HARVEST_VERDICTS.clear()
-        def _boom(base, lp, q, lo): raise TradeError("429")
+        def _boom(base, lp, q, lo, **kw): raise TradeError("429")
         globals()["search_min_dps"] = _boom
         _v4 = make_harvest_verifier("b", "/l", {}, budget=8)
         assert _v4({"id": "TMP", "pdps": 100, "edps": 0, "price": 1, "cur": "divine"}) is False
@@ -3256,6 +3283,32 @@ def demo():
     assert _real[_cut_index(len(_real))] >= 688, _real[_cut_index(len(_real))]
     assert probe_levels(_real[_cut_index(len(_real))])[0] > 600  # 문턱이 실제 시장 안에 놓인다
     assert probe_levels(138)[0] < 130                           # 옛 방식이면 시장 밖으로 나간다
+
+    # 방패(방어구)는 지표가 DPS 가 아니라 방어도다. 여기가 어긋나면 거래소에 DPS 를 물어보고
+    # 조용히 0건을 받는다 — 오류가 안 나서 "그 무기는 매물이 없나 보다"로 오해하기 딱 좋다.
+    assert normalize({"item": {"extended": {"ar": 812}, "typeLine": "타워 실드", "rarity": "Rare"},
+                      "listing": {"price": {"currency": "divine", "amount": 3}}}, "ar")["pdps"] == 812.0
+    assert normalize({"item": {"extended": {"pdps": 500}, "rarity": "Rare"},
+                      "listing": {"price": {"currency": "divine", "amount": 3}}}, "ar") is None  # ar 없으면 버림
+    assert normalize({"item": {"extended": {"ar": 812}, "rarity": "Rare"},
+                      "listing": {"price": {"currency": "divine", "amount": 3}}}) is None        # dps 지표론 방패 안 받음
+    _seen_q = {}
+    _kpm = (globals()["api_get"], globals()["throttle"])
+    try:
+        globals()["throttle"] = lambda bk, mw=None: None
+        def _cap(url, body=None, **kw):
+            _seen_q.setdefault("calls", []).append(body)
+            return {"id": "Q", "result": [], "total": 0}
+        globals()["api_get"] = _cap
+        search_top_dps("b", "/l", {"filters": {}}, metric="ar")
+        search_min_dps("b", "/l", {"filters": {}}, 300, metric="ar")
+        _calls = _seen_q["calls"]
+        assert _calls[0]["sort"] == {"ar": "desc"}, _calls[0]          # 방어도 내림차순으로 물어본다
+        _f = _calls[1]["query"]["filters"]["equipment_filters"]["filters"]
+        assert _f == {"ar": {"min": 300}}, _f                          # 문턱도 방어도로
+        assert "dps" not in _f, "방패인데 DPS 필터가 섞였다"
+    finally:
+        globals()["api_get"], globals()["throttle"] = _kpm
 
     # 이력 정리: 읽는 창 밖은 지우되 창 안은 절대 안 건드린다(지우면 추세·합집합이 빈다)
     _kdP = DB; _dP = tempfile.mkdtemp(); DB = os.path.join(_dP, "p.db")
@@ -3467,9 +3520,13 @@ def demo():
     assert _wq["filters"]["equipment_filters"]["filters"]["dps"] == {"min": 500}  # 다른 필터 보존
     assert _wq["status"] == {"option": "securable"}                                # 상태 보존
     assert "type_filters" not in _q["filters"]                                     # 원본 불변
-    # ATTACK_WEAPONS 는 캐스터를 절대 안 담고, 전부 weapon.* 이며, 접미사는 유일하고 활만 빈 접미사.
+    # ATTACK_WEAPONS 는 캐스터를 절대 안 담고, 접미사는 유일하고 활만 빈 접미사.
+    # weapon.* 과 armour.*(방패) 둘만 허용한다 — 그 밖의 접두는 metric_of 가 dps 로 잘못 잡는다.
     _ids = [c for c, s, n in ATTACK_WEAPONS]
-    assert all(i.startswith("weapon.") for i in _ids)
+    assert all(i.startswith(("weapon.", "armour.")) for i in _ids), _ids
+    # 지표가 카테고리에서 제대로 갈리는가 — 여기가 어긋나면 방패를 DPS 로 검색해 0건이 된다
+    assert metric_of("weapon.bow") == "dps" and metric_of("armour.shield") == "ar"
+    assert [metric_of(i) for i in _ids].count("ar") == 1, "방어구는 방패 하나뿐이어야 한다"
     assert not (set(_ids) & CASTER_CATEGORIES), "캐스터가 공격무기 목록에 샜다"
     _sfx = [s for c, s, n in ATTACK_WEAPONS]
     assert len(_sfx) == len(set(_sfx)), "무기 접미사 중복 — latest 파일이 덮어써진다"
