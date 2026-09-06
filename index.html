@@ -885,15 +885,29 @@ function optRank(key){
 }
 const byUsefulness = (ka, na, kb, nb) => optRank(ka) - optRank(kb) || nb - na;
 
+// 크라우드(사용자 앱)가 보낸 행의 옵션 문자열은 워커가 타입·길이만 보고 통과시킨다.
+// 그래서 지어낸 옵션 이름으로 가짜 조건 곡선을 만들 수 있다(재현됨).
+//
+// "수집기가 관측한 옵션만 허용"으로 막으려다 **재보고 그만뒀다** — 표본 3개 이상인
+// 옵션 열쇠 224종 중 120종(53.6%)이 크라우드에만 있다. 수집기는 지표 상위 100개 +
+// 탐침만 보므로 어휘가 좁고, 넓은 구간을 채우는 게 크라우드의 존재 이유다.
+// 그 규칙은 공격 하나를 막으려고 정당한 어휘 절반을 버린다.
+//
+// 대신 출처를 밝힌다: 수집기 관측이 하나도 없는 조건은 '제보' 로 표시해서,
+// 사용자가 그 곡선의 근거가 사용자 제보뿐임을 보고 판단하게 한다.
 function localConds(base){
-  const cnt = new Map();
-  for (const b of base) for (const k of Object.keys(b.offs)) cnt.set(k, (cnt.get(k) || 0) + 1);
+  const cnt = new Map(), trusted = new Set();
+  for (const b of base) {
+    const keys = Object.keys(b.offs);
+    for (const k of keys) cnt.set(k, (cnt.get(k) || 0) + 1);
+    if (b.src && b.src.src !== 'user') for (const k of keys) trusted.add(k);
+  }
   const measured = new Set(snapConds.map(c => condKey(c)));
   return [...cnt.entries()]
     .filter(([k, n]) => !measured.has(k) && n >= 3)
     .sort((a, b) => byUsefulness(a[0], a[1], b[0], b[1]))
     .slice(0, 12)
-    .map(([k, n]) => ({ label: k, n, local: true }));
+    .map(([k, n]) => ({ label: k, n, local: true, crowdOnly: !trusted.has(k) }));
 }
 
 function buildConds(){
@@ -902,7 +916,9 @@ function buildConds(){
   const rows = [{ label: null, text: '조건 없음 (전체 최저가)', tag: '' }]
     .concat(snapConds.map(c => ({ label: c.label, text: condText(c), tag: '측정' })))
     .concat(localConds(base).map(c => ({ label: c.label, text: c.label,
-                                        tag: `표본 ${c.n}개`, local: true })));
+                                        // 수집기 관측이 하나도 없으면 근거가 사용자 제보뿐이다 — 그걸 밝힌다
+                                        tag: c.crowdOnly ? `제보 ${c.n}개` : `표본 ${c.n}개`,
+                                        local: true })));
   // 데이터가 갱신돼 사라진 조건은 선택에서 걷어낸다 (유령 조건이 전부를 걸러버리는 것 방지)
   const known = new Set(rows.map(r => r.label).filter(Boolean));
   for (const l of [...pickedConds]) if (!known.has(l)) pickedConds.delete(l);
