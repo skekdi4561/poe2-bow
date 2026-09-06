@@ -411,12 +411,14 @@ function dpsOf(b){
 // 최상위 활이 '공짜'로 최전선을 점령한다 — 스냅샷 환율이 없을 때의 안전망이므로 지우지 말 것.
 // 아래는 스냅샷이 없을 때(직접 등록만 쓸 때)의 출발값일 뿐, 실제 값은 수집기가 채운다.
 const TRADE_CURRENCIES = ['exalted', 'chaos', 'divine', 'annul', 'mirror'];
-const RATE_DEFAULT = { exalted: 1, chaos: 65, divine: 300, annul: 279, mirror: 2000000 };
+// 첫 로드(스냅샷 도착 전)에만 쓰이는 안전망. 2026-09-06 poe.ninja 실측으로 갱신 —
+// 직전 값은 지난 리그 것이라 chaos 19.4배·annul 29.9배·divine 4.4배 어긋나 있었다.
+const RATE_DEFAULT = { exalted: 1, chaos: 3.4, divine: 69, annul: 9.3, mirror: 69 * 350 };
 // 미러만 절대값을 안 쓴다. 2,000,000 엑잘은 divine 이 300 엑잘이던 리그의 실측이라,
 // 리그가 바뀌면 그대로 틀린다(이 리그 divine 은 65.6 — 절대값을 쓰면 4.6배 부풀린다).
 // 미러는 시장에서 디바인의 배수로 매겨지고 디바인은 수집기가 매 사이클 실측하므로,
 // 디바인 기준 배수로 두면 리그가 바뀌어도 같이 따라간다.
-const MIRROR_IN_DIVINE = 6500;   // 2,000,000 ex / 300 ex(그 리그 divine)
+const MIRROR_IN_DIVINE = 350;   // 2026-09-06 실측 (mirror 24,104 ex / divine 68.9 ex)
 let rates = {};          // 사용자가 직접 고친 값 (항상 최우선)
 let snapRates = {};      // 수집기가 거래소 대량 교환에서 떠온 값 { cur: {rate, n, lo, hi} }
 // 수집기가 "그 옵션을 검색 조건으로 걸어" 직접 재온 곡선들.

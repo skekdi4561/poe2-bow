@@ -3185,12 +3185,25 @@ def demo():
                    "bows": [{"pdps": 1500, "edps": 0, "price": 1, "cur": "mirror", "rarity": "Rare"},
                             {"pdps": 500, "edps": 0, "price": 10, "cur": "exalted", "rarity": "Rare"}]}
     _mr, _mrt, _mfb = market_rows(_mir_latest)
-    assert _mrt["mirror"] == DEFAULT_RATES["mirror"] == 2000000.0, _mrt
-    assert [r["p"] for r in _mr if r["d"] == 1500] == [2000000.0], _mr   # p = 2,000,000 × price 1
+    # 상수를 박지 말 것 — 옛 값을 "정상"으로 고정하면 그 자체가 결함을 지킨다(실제로 그랬다).
+    _want_mirror = DEFAULT_RATES["divine"] * MIRROR_IN_DIVINE
+    assert _mrt["mirror"] == _want_mirror, (_mrt, _want_mirror)          # market_rows 도 디바인 배수
+    assert [r["p"] for r in _mr if r["d"] == 1500] == [_want_mirror], _mr
     assert _mfb is True, "기본값 환율이 실제로 쓰였는데 폴백 표시가 없다"
     _mv = price_verdict(_it, _mir_latest)                     # DPS 142 → 최저가 d500, 한 계단 위 = 미러 매물
-    assert "한 계단 위: DPS 1500 부터 6,667 div" in _mv, _mv   # 2,000,000 ex ÷ divine 기본값 300
+    # 표기는 화면과 같은 함수(money_py)로 만들고 값은 불변식으로 따로 본다.
+    # 옛 값 "6,667 div" 를 박아둔 탓에 환율을 갱신하자 여기서 걸렸다 — 상수는 결함을 지킨다.
+    assert ("한 계단 위: DPS 1500 부터 " + money_py(_want_mirror, _mrt)) in _mv, _mv
+    assert _want_mirror / _mrt["divine"] == MIRROR_IN_DIVINE      # 미러 폴백 = 디바인 배수
     assert "매물 2개" in _mv and "환율 일부 기본값" in _mv, _mv
+    # 디바인 **실측**은 있고 미러만 없는 스냅샷 — 이때 미러는 기본 디바인이 아니라 그 실측을
+    # 따라가야 한다. 이게 market_rows 가 _ex_rate 와 같은 규칙을 쓰는지 가르는 유일한 경우다
+    # (기본값끼리는 우연히 같은 값이라 안 갈린다).
+    _mir2 = {"taken_at": int(time.time() * 1000), "rates": {"divine": {"rate": 200.0}},
+             "bows": [{"pdps": 1500, "edps": 0, "price": 1, "cur": "mirror", "rarity": "Rare"}]}
+    _mr2, _mrt2, _ = market_rows(_mir2)
+    assert _mrt2["mirror"] == 200.0 * MIRROR_IN_DIVINE, _mrt2
+    assert _mrt2["mirror"] != DEFAULT_RATES["mirror"], "기본 디바인이 아니라 실측 디바인을 따라야 한다"
 
     # guard_rates: 빠진 화폐는 기억으로 메우고, 급락 관측은 독버섯으로 걸러낸다
     _mem = {"divine": 400.0, "annul": 160.0}
@@ -3573,9 +3586,15 @@ def frontier_py(rows):
 # 페이지의 RATE_DEFAULT 와 같은 값 — 환율 수집이 실패한 스냅샷에서도 축척이 살아야 한다.
 # 실제 사고: 교환 API 가 막힌 시간의 수집분에 엑잘 환율만 실려, 디바인 매물 135개가
 # 판정에서 통째로 사라졌었다. 기본값 폴백은 페이지가 이미 쓰는 방식이다.
-MIRROR_IN_DIVINE = 6500.0   # 2,000,000 ex / 300 ex(그 리그 divine) — _ex_rate 주석 참고
-DEFAULT_RATES = {"exalted": 1.0, "chaos": 65.0, "divine": 300.0, "annul": 279.0,
-                 "mirror": 2000000.0}   # index.html RATE_DEFAULT / appraiser.ts DEFAULT_RATES 와 같은 값
+# 미러/디바인 비율. 2026-09-06 실측 350.0(mirror 24,104 ex / divine 68.9 ex).
+# ⚠ 이 비율도 리그마다 바뀐다 — 처음엔 지난 리그 값 6500(2,000,000/300)을 그대로 옮겨 썼는데
+#   이번 리그 실측이 350 이라 18.6배 어긋나 있었다. 절대값보다는 덜 썩지만 안 썩는 건 아니다.
+MIRROR_IN_DIVINE = 350.0
+# 첫 스냅샷이 오기 전에만 쓰이는 안전망(콜드 스타트). 실측이 있으면 언제나 실측이 이긴다.
+# 2026-09-06 poe.ninja 실측으로 갱신 — 직전 값은 지난 리그 것이라 chaos 19.4배·annul 29.9배·
+# divine 4.4배·mirror 83배 어긋나 있었다. index.html RATE_DEFAULT / appraiser.ts DEFAULT_RATES 와 같은 값.
+DEFAULT_RATES = {"exalted": 1.0, "chaos": 3.4, "divine": 69.0, "annul": 9.3,
+                 "mirror": 69.0 * MIRROR_IN_DIVINE}
 
 
 def market_rows(latest):
@@ -3586,7 +3605,9 @@ def market_rows(latest):
         v = raw.get(c)
         r = (v.get("rate") if isinstance(v, dict) else v) or 0
         if not (isinstance(r, (int, float)) and r >= 1):
-            r = DEFAULT_RATES.get(c, 0)
+            # 미러는 절대값이 아니라 디바인 배수로 — _ex_rate 와 같은 규칙이어야 한다.
+            # (같은 파일 안에서 두 경로가 갈려 있었다: _ex_rate 는 배수, 여기는 절대값)
+            r = _ex_rate(raw, c) if c == "mirror" else DEFAULT_RATES.get(c, 0)
             if r and c != "exalted":
                 fb_curs.add(c)         # 기본값으로 채워진 화폐 — 실제로 쓰일 때만 폴백으로 친다
         rates[c] = r
