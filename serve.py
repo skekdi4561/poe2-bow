@@ -1202,11 +1202,33 @@ def load_trade(page_url, limit):
 
 # 페이지가 실제로 필요한 파일만 내보낸다. 폴더를 통째로 열면 snapshots.db 나
 # 나중에 누가 여기 둘 파일까지 브라우저로 새어 나간다.
+LATEST = os.path.join(ROOT, "latest.json")
+
+# 리그 태그. "" = 도전 리그(소프트코어), "hc" = 하드코어.
+# **소프트코어 파일명은 글자 하나도 바뀌면 안 된다** — 이미 배포된 오버레이(v1.1.1)가
+# latest.json / latest.<접미사>.json 을 그대로 fetch 한다. 태그는 앞에만 끼운다.
+LEAGUE_TAGS = ("", "hc")
+
+
+def latest_path(suffix="", tag=""):
+    """스냅샷 파일 경로. latest[.<태그>][.<접미사>].json
+
+    둘 다 비면 **LATEST 전역을 그대로** 돌려준다(join 으로 다시 만들지 말 것) —
+    자체 테스트가 ROOT 와 LATEST 를 따로 갈아끼우고 그때 basename 이 latest.json 이 아니다.
+    """
+    if not suffix and not tag:
+        return LATEST
+    return os.path.join(ROOT, "latest." + ".".join(p for p in (tag, suffix) if p) + ".json")
+
+
 SERVED = {"/", "/index.html", "/latest.json", "/favicon.ico", "/favicon.png", "/og.png",
           "/poe2-bow-harvester.user.js"}   # 채집기 설치 링크용 (Tampermonkey 가 .user.js 를 감지)
 # 무기별 곡선 파일(latest.<접미사>.json)도 내보낸다. 화이트리스트는 ATTACK_WEAPONS 의 알려진
 # 접미사로 잠근다 — 임의 파일명(latest.evil.json)이나 캐스터는 못 새어 나간다.
-WEAPON_LATEST = {"/latest.%s.json" % s for _c, s, _n in ATTACK_WEAPONS if s}
+# 태그 × 접미사 곱집합. `if s or t` 라 (태그없음, 접미사없음) = latest.json 은 여기 안 들어간다
+# (그건 위 SERVED 에 이미 있다). 정규식으로 풀지 말 것 — 정확 일치 화이트리스트가 계약이다.
+WEAPON_LATEST = {"/" + os.path.basename(latest_path(s, t))
+                 for t in LEAGUE_TAGS for _c, s, _n in ATTACK_WEAPONS if s or t}
 
 
 def served_path(request_path):
@@ -1303,7 +1325,6 @@ class Handler(SimpleHTTPRequestHandler):
 GitHub Actions 로 옮겨도 부르는 명령은 똑같다 — 호스트에 안 묶여 있다.
 """
 DB = os.path.join(ROOT, "snapshots.db")
-LATEST = os.path.join(ROOT, "latest.json")
 
 
 def db():
@@ -1617,10 +1638,18 @@ def prune_db(con, days=PRUNE_DAYS):
 
 
 def _league_sql(league, alias="s."):
-    """리그를 주면 "그 리그 + 리그가 안 찍힌 옛 행" 으로 좁히는 WHERE 조각."""
+    """리그를 주면 그 리그로만 좁히는 WHERE 조각.
+
+    예전엔 `league IS NULL OR` 로 리그 칸이 비어 있던 옛 행까지 통과시켰다(마이그레이션 관용).
+    리그가 둘이 되면 그 관용이 오염 경로가 된다 — 하드코어 첫 추세가 소프트코어 스냅샷으로
+    그려지고, 더 나쁘게는 rate_memory 가 소프트코어 환율을 물려받아 guard_rates 의 3배 밴드가
+    하드코어 실제 환율을 거부한다(지난 리그 divine 300 이 새 리그 65.6 을 하루 종일 막았던 실사고와 같은 경로).
+    2026-09-08 에 옛 행 97개를 'forbidden rites' 로 백필했으므로 관용은 더 필요 없다.
+    `not league` 분기는 남긴다 — 기본값(league=None)으로 부르는 호출부가 있다.
+    """
     if not league:
         return ""
-    return " AND (%(a)sleague IS NULL OR %(a)sleague = ?)" % {"a": alias}
+    return " AND %(a)sleague = ?" % {"a": alias}
 
 
 def _league_args(league):
@@ -1704,8 +1733,12 @@ def recent_rows(hours=24, league=None):
     with db() as con:
         # category IS NULL = 활. 2026-09-05 부터 다른 무기도 같은 표에 쌓이므로 반드시 가른다 —
         # 안 가르면 육척봉·창 매물이 활 곡선의 24시간 합집합으로 흘러든다.
+        # 리그 조건이 빠지면 두 리그가 번갈아 쓸 때 '가장 최근 활 스냅샷'이 **상대 리그 것**이
+        # 되어 24시간 합집합의 겹침 판정이 통째로 뒤집힌다(지금은 id 없는 행이 0건이라 무증상).
         row = con.execute(
-            "SELECT id FROM snapshots WHERE category IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+            "SELECT id FROM snapshots WHERE category IS NULL"
+            + _league_sql(league, "") + " ORDER BY id DESC LIMIT 1",
+            _league_args(league)).fetchone()
         latest_snap = row[0] if row else -1
         rows = con.execute(
             "SELECT b.id, b.snapshot_id, s.taken_at, b.name, b.pdps, b.edps, b.aps, b.crit,"
@@ -1801,7 +1834,7 @@ def guard_rates(measured, memory):
     return out
 
 
-def collect(url):
+def collect(url, tag=""):
     """한 시점의 시세를 통째로 뜬다. 스냅샷 하나 = 한 시점 = 시점이 섞일 수 없다."""
     taken = int(time.time() * 1000)
 
@@ -1859,15 +1892,17 @@ def collect(url):
         trend = build_trend(league=league)
     except Exception as e:                       # 추세는 부가정보 — 실패해도 수집은 나간다
         print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e)); trend = None
+    out = latest_path("", tag)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
-                  "rates": rates, "conds": conds, "bows": merged, "trend": trend})
-    print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → latest.json"
-          % (time.strftime("%H:%M:%S"), len(bows), len(merged), total, skipped))
+                  "rates": rates, "conds": conds, "bows": merged, "trend": trend}, out)
+    print("[%s] 이번 수집 %d개 · 24시간 합집합 %d개 (검색 결과 %d, 제외 %d) → %s"
+          % (time.strftime("%H:%M:%S"), len(bows), len(merged), total, skipped,
+             os.path.basename(out)))
     for name, b in RATE_STATE.items():
         if b.get("state"):
             print("     레이트 리밋 %-12s %s / 한도 %s" % (name, b["state"], b.get("rules")))
-    if "--push" in sys.argv:                    # 데모(--test)는 이 플래그가 없어 안 탄다
-        push_latest()
+    # 푸시는 여기서 안 한다 — collect_loop 가 사이클 끝에 한 번만 민다(9단계 참고).
+    # 무기마다 밀면 사이클당 8커밋이라 GitHub Pages 빌드 소프트 한도(10회/시간)에 먼저 걸린다.
     return len(bows)
 
 
@@ -1889,7 +1924,7 @@ def dedup_by_cond_id(rows):
     return out
 
 
-def collect_weapon(url, cat_id, suffix):
+def collect_weapon(url, cat_id, suffix, tag=""):
     """비-활 공격무기 한 종의 현재 시세를 떠서 latest.<suffix>.json 에 쓴다.
 
     24h 합집합(bows 테이블)은 아직 활 전용이라 안 쓴다. 이력과 추세는 무기별로 남긴다.
@@ -1904,15 +1939,21 @@ def collect_weapon(url, cat_id, suffix):
     rows = dedup_by_cond_id(rows)                 # 활 merge_harvest 의 (cond,id) 접기와 정합
     # 크라우드 합류 — 이 무기·이 리그 행만. 최전선을 잠식하는 행은 거래소로 진위 확인하되
     # 예산은 활(8)보다 작게 잡는다(무기가 6종이라 사이클당 총량이 6배가 된다).
-    try:
-        rows = merge_harvest(
-            rows,
-            verifier=make_harvest_verifier(base, league_path0,
-                                           with_category(q0, cat_id), budget=3,
-                                           metric=metric_of(cat_id)),
-            league=league, category=cat_id, rates=rates)
-    except Exception as e:                    # 크라우드는 부가정보 — 실패해도 수집은 나간다
-        print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
+    #
+    # 하드코어(tag)는 건너뛴다. 워커의 /recent 는 카테고리로만 자르고 리그로는 안 자르는데
+    # (worker/src/index.js), 지금 크라우드 3,000행에 하드코어는 0건이다. 켜두면 사이클마다
+    # 워커를 8번 왕복해 800행을 받아 merge_harvest 의 리그 필터가 전부 버리는 순수 낭비다.
+    # 하드코어 사용자가 생기면 워커에 리그 필터를 넣고 여기를 열면 된다.
+    if not tag:
+        try:
+            rows = merge_harvest(
+                rows,
+                verifier=make_harvest_verifier(base, league_path0,
+                                               with_category(q0, cat_id), budget=3,
+                                               metric=metric_of(cat_id)),
+                league=league, category=cat_id, rates=rates)
+        except Exception as e:                # 크라우드는 부가정보 — 실패해도 수집은 나간다
+            print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
     if not rows:
         # 빈 결과로 파일을 덮지 않는다 — 일시적 실패나 질의문 불일치로 0이 나왔을 때
         # 지난 정상 수집분을 날려버리면 사이트가 "아직 수집 안 됨"으로 후퇴한다.
@@ -1946,14 +1987,12 @@ def collect_weapon(url, cat_id, suffix):
     except Exception as e:
         print("     추세 계산 건너뜀: %s: %s" % (type(e).__name__, e))
         trend = None
-    out_path = os.path.join(ROOT, "latest.%s.json" % suffix)
+    out_path = latest_path(suffix, tag)
     write_latest({"taken_at": taken, "total": total, "skipped": skipped, "league": urlunquote(league),
                   "rates": rates, "conds": conds, "bows": rows, "trend": trend,
                   "category": cat_id}, out_path)
-    print("[%s] %s(%s) 수집 %d개 → latest.%s.json"
-          % (time.strftime("%H:%M:%S"), suffix, cat_id, len(rows), suffix))
-    if "--push" in sys.argv:
-        push_latest(path=out_path)
+    print("[%s] %s(%s) 수집 %d개 → %s"
+          % (time.strftime("%H:%M:%S"), suffix, cat_id, len(rows), os.path.basename(out_path)))
     return len(rows)
 
 
@@ -1998,7 +2037,10 @@ def push_latest(cwd=None, path=None):
     def run(*cmd):
         return subprocess.run(cmd, cwd=cwd or ROOT, capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
-    run("git", "add", os.path.basename(path) if path else "latest.json")
+    # path 를 안 주면 이번 사이클이 쓴 스냅샷 전부를 한 번에 민다(리그·무기 수와 무관하게 커밋 1회).
+    # 예전엔 무기마다 밀어서 사이클당 8커밋 = 6.9회/시간이었고, Pages 빌드 소프트 한도가
+    # 10회/시간이라 하드코어를 얹으면 거래소보다 **배포가 먼저 막힌다**.
+    run("git", "add", os.path.basename(path) if path else "latest*.json")
     c = run("git", "commit", "-m", "시세 갱신 " + time.strftime("%Y-%m-%d %H:%M"))
     if c.returncode != 0:
         out = (c.stdout or "") + (c.stderr or "")
@@ -2090,6 +2132,27 @@ def release_collector_lock():
         pass
 
 
+def with_league(url, tag=""):
+    """저장 검색 URL 의 리그 세그먼트를 태그에 맞춰 갈아끼운다. 거래소 요청 0회.
+
+    현재 URL 은 검색ID가 아니라 gzip+base64 블롭(H4sI…)이라 조건이 주소 안에 다 들어 있다.
+    그래서 리그 조각만 바꾸면 같은 질의문이 그대로 다른 리그로 재조준된다(실측 확인).
+
+    **정규화가 핵심이다.** 들어온 URL 에서 "HC " 접두를 일단 벗기고 태그가 있을 때만 다시 붙인다.
+    url 은 last_url()(DB 의 마지막 source_url)에서 오는데 하드코어 사이클도 자기 URL 을
+    source_url 로 남기므로, 벗기지 않으면 재시작 직후 소프트코어 패스가 하드코어 URL 을 물고
+    돌아 **latest.json 을 하드코어 데이터로 덮는다**.
+    """
+    parts = url.split("/")
+    if len(parts) < 2:
+        return url
+    base_league = urlunquote(parts[-2])
+    if base_league.startswith("HC "):
+        base_league = base_league[3:]
+    parts[-2] = urlquote(("HC " if tag else "") + base_league, safe="")
+    return "/".join(parts)
+
+
 def collect_loop(url, every, weapons=False):
     """weapons=True 면 **한 사이클에 공격무기 13종을 전부** 수집한다(캐스터 제외).
 
@@ -2102,25 +2165,43 @@ def collect_loop(url, every, weapons=False):
     한 무기가 실패해도 나머지는 계속 돈다 — 무기별로 예외를 가둔다.
     활(접미사 빈 문자열)은 24h 합집합·크라우드·추세를 포함한 기존 전체 파이프라인.
     """
+    # 리그별 주기. (태그, 몇 사이클마다, 표시명) — 하드코어는 거래가 적어 가격이 천천히
+    # 움직이므로 2사이클(약 2.3시간)마다면 충분하다. 별도 프로세스나 cron 으로 나누면
+    # 싱글톤 락에 막히고, 락을 지워도 스로틀 페이싱 상태가 프로세스 전역이라 두 인스턴스가
+    # 서로의 잔여량을 못 보고 동시에 나간다 — 같은 루프 안 카운터가 유일하게 안전하다.
+    LEAGUE_PLAN = (("", 1, "소프트코어"), ("hc", 2, "하드코어"))
+    cycle = 0
     while True:
         if weapons:
             t0 = time.time()
             done = 0
-            for cat_id, suffix, name in ATTACK_WEAPONS:
-                print("[%s] 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
+            for tag, nth, lname in LEAGUE_PLAN:
+                if cycle % nth:
+                    continue
+                lurl = with_league(url, tag)
+                print("[%s] === %s 리그 ===" % (time.strftime("%H:%M:%S"), lname))
+                for cat_id, suffix, name in ATTACK_WEAPONS:
+                    print("[%s] 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
+                    try:
+                        if suffix:
+                            collect_weapon(lurl, cat_id, suffix, tag)
+                        else:
+                            collect(lurl, tag)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
+                        done += 1
+                    except TradeError as e:
+                        print("     %s 건너뜀: %s" % (name, e))
+                    except Exception as e:    # 한 무기가 죽어도 나머지는 계속
+                        print("     %s 오류: %s: %s" % (name, type(e).__name__, e))
+            # 푸시는 사이클 끝 1회. 무기·리그마다 밀면 커밋이 8~16회가 되어 GitHub Pages
+            # 빌드 소프트 한도(10회/시간)에 거래소 레이트 리밋보다 먼저 걸린다.
+            if done and "--push" in sys.argv:
                 try:
-                    if suffix:
-                        collect_weapon(url, cat_id, suffix)
-                    else:
-                        collect(url)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
-                    done += 1
-                except TradeError as e:
-                    print("     %s 건너뜀: %s" % (name, e))
-                except Exception as e:        # 한 무기가 죽어도 나머지는 계속
-                    print("     %s 오류: %s: %s" % (name, type(e).__name__, e))
-            print("[%s] 이번 사이클 %d/%d 종 수집 (%.0f분)"
-                  % (time.strftime("%H:%M:%S"), done, len(ATTACK_WEAPONS),
-                     (time.time() - t0) / 60))
+                    push_latest()
+                except Exception as e:
+                    print("     페이지 푸시 건너뜀: %s: %s" % (type(e).__name__, e))
+            print("[%s] 이번 사이클 %d종 수집 (%.0f분)"
+                  % (time.strftime("%H:%M:%S"), done, (time.time() - t0) / 60))
+            cycle += 1
         else:
             try:
                 collect(url)
@@ -2278,6 +2359,15 @@ def demo():
     assert not served_path("/latest.wand.json")     # 캐스터 접미사는 목록에 없음
     assert not served_path("/latest.evil.json") and not served_path("/snapshots.db")
     assert not served_path("/latest..json")          # 활은 SERVED 의 /latest.json 이지 빈 접미사 파일이 아님
+    # 리그 태그. **소프트코어 이름은 글자 하나도 안 바뀐다** — 이미 배포된 오버레이(v1.1.1)가
+    # latest.json / latest.<접미사>.json 을 그대로 fetch 한다. 이 단언이 그 하위 호환의 기계적 증거다.
+    assert latest_path("", "") is globals()["LATEST"], "SC 활 경로가 LATEST 전역이 아니면 --test 의 monkeypatch 가 깨진다"
+    assert os.path.basename(latest_path("crossbow", "")) == "latest.crossbow.json"
+    assert os.path.basename(latest_path("", "hc")) == "latest.hc.json"
+    assert os.path.basename(latest_path("crossbow", "hc")) == "latest.hc.crossbow.json"
+    assert served_path("/latest.hc.json") and served_path("/latest.hc.crossbow.json")
+    assert not served_path("/latest.hc..json")       # 태그만 있고 접미사가 빈 이름은 위 latest.hc.json 뿐
+    assert not served_path("/latest.hc.wand.json")   # 캐스터는 태그가 붙어도 목록 밖
 
     # 로그 필터가 문자열이 아닌 인자에 터지면 send_error 가 응답을 못 쓰고 연결이 끊긴다
     from http import HTTPStatus
@@ -2879,28 +2969,47 @@ def demo():
         DB = _kw_db; shutil.rmtree(_kw_db_dir, ignore_errors=True)
         globals()["HARVEST_URL"] = _kw_h
 
-    # collect_loop(weapons=True): 한 사이클에 13종을 전부 돌고,
-    # 한 무기가 실패해도 나머지가 계속 돈다(예전엔 사이클마다 한 종씩 순환).
+    # with_league: URL 의 리그 조각만 갈아끼운다(거래소 요청 0회). **정규화가 핵심** —
+    # 하드코어 URL 이 들어와도 태그가 없으면 소프트코어로 되돌려야 한다. 안 그러면 재시작 직후
+    # last_url() 이 하드코어 URL 을 돌려줄 때 소프트코어 파일이 하드코어 데이터로 덮인다.
+    _u_sc = "https://h/trade2/search/poe2/Forbidden%20Rites/H4sIblob"
+    _u_hc = "https://h/trade2/search/poe2/HC%20Forbidden%20Rites/H4sIblob"
+    assert with_league(_u_sc, "") == _u_sc
+    assert with_league(_u_sc, "hc") == _u_hc
+    assert with_league(_u_hc, "hc") == _u_hc, "이미 HC 인 URL 에 HC 를 또 붙이면 안 된다"
+    assert with_league(_u_hc, "") == _u_sc, "재시작 오염 경로 — HC URL 이 SC 로 안 돌아왔다"
+
+    # collect_loop(weapons=True): 한 사이클에 8종을 전부 돌고, 한 무기가 실패해도 나머지가 돈다.
+    # 그리고 리그 주기를 지킨다 — 사이클 0 은 두 리그, 사이클 1 은 소프트코어만.
     _seen_w, _k_cw, _k_c, _k_sleep = [], collect_weapon, collect, time.sleep
     class _StopCycle(Exception):
         pass
     try:
-        def _cw(u, cat, sfx):
-            _seen_w.append(sfx)
+        def _cw(u, cat, sfx, tag="", **kw):
+            _seen_w.append((tag, sfx))
+            assert ("HC%20" in u) == bool(tag), (u, tag)   # 태그와 URL 이 어긋나면 파일이 섞인다
             if sfx == "spear":
                 raise TradeError("한 무기만 실패")   # 나머지를 멈추면 안 된다
         globals()["collect_weapon"] = _cw
-        globals()["collect"] = lambda u, n=None: _seen_w.append("")
+        globals()["collect"] = lambda u, tag="", **kw: _seen_w.append((tag, ""))
+        _cycles = [0]
         def _sleep(x):
-            raise _StopCycle()                      # 첫 사이클만 돌고 빠져나온다
+            _cycles[0] += 1
+            if _cycles[0] >= 2:
+                raise _StopCycle()                  # 두 사이클만 돌고 빠져나온다
         time.sleep = _sleep
         try:
-            collect_loop("u", 3600, weapons=True)
+            collect_loop(_u_sc, 3600, weapons=True)
         except _StopCycle:
             pass
-        assert _seen_w == [w[1] for w in ATTACK_WEAPONS], _seen_w
-        assert len(_seen_w) == len(ATTACK_WEAPONS) and _seen_w[0] == "", "활이 먼저, 전 종목"
-        assert "warstaff" in _seen_w, "실패한 무기 뒤가 안 돌았다"
+        _sfx = [w[1] for w in ATTACK_WEAPONS]
+        _c0_sc = [s for t, s in _seen_w[:len(_sfx)]]
+        assert _c0_sc == _sfx, _c0_sc
+        assert _c0_sc[0] == "", "활이 먼저"
+        assert "warstaff" in _c0_sc, "실패한 무기 뒤가 안 돌았다"
+        _tags = [t for t, s in _seen_w]
+        # 사이클 0: 소프트코어 8 + 하드코어 8, 사이클 1: 소프트코어 8만
+        assert _tags == [""] * 8 + ["hc"] * 8 + [""] * 8, _tags
     finally:
         globals()["collect_weapon"], globals()["collect"] = _k_cw, _k_c
         time.sleep = _k_sleep
@@ -3494,15 +3603,20 @@ def demo():
         assert rate_memory()["divine"] == 300.0   # 리그를 안 주면 섞인다 — 지난 리그 값이 이긴다
         _nmL = [r["name"] for r in recent_rows(league="new league")]
         assert _nmL == ["new league"], _nmL              # 24시간 합집합도 리그를 가른다
-        # 리그가 안 찍힌 옛 행(NULL)은 지금 리그로 본다 — 칸이 생기기 전 데이터를 버리지 않는다
+        # 리그가 안 찍힌 옛 행(NULL)은 **어느 리그에도 안 섞인다**(2026-09-08 계약 변경).
+        # 예전엔 "칸이 생기기 전 데이터를 버리지 않는다"며 현재 리그로 봐줬는데, 리그가 둘이 되는
+        # 순간 그 관용이 오염 경로가 됐다 — 하드코어 첫 사이클이 소프트코어 환율을 기억으로
+        # 물려받고 guard_rates 의 3배 밴드가 하드코어 실제 환율을 거부한다.
+        # 운영 DB 의 옛 행 97개는 'forbidden rites' 로 백필했으므로 잃는 데이터도 없다.
         with db() as _cL:
             _sN = _cL.execute("INSERT INTO snapshots(taken_at,source_url,rates) VALUES (?,?,?)",
                               (_nowL, "u", json.dumps({"chaos": {"rate": 2.5}}))).lastrowid
             _cL.execute("INSERT INTO bows(snapshot_id,name,pdps,edps,aps,crit,price,cur,"
                         "rarity,mods,id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                         (_sN, "리그없음", 400.0, 0.0, 1.0, 5.0, 3.0, "exalted", "Rare", "[]", "i-null"))
-        assert rate_memory(league="new league").get("chaos") == 2.5
-        assert "리그없음" in [r["name"] for r in recent_rows(league="new league")]
+        assert rate_memory(league="new league").get("chaos") is None, rate_memory(league="new league")
+        assert "리그없음" not in [r["name"] for r in recent_rows(league="new league")]
+        assert rate_memory().get("chaos") == 2.5   # 리그를 안 주면 여전히 전부 본다(기본값 호출부)
     finally:
         DB = _kdL; shutil.rmtree(_dL, ignore_errors=True)
 
