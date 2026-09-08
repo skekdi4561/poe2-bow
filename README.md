@@ -27,7 +27,8 @@
 |---|---|
 | `index.html` | 사이트 전체 (정적 한 페이지) |
 | `latest.json` | 활 시세 스냅샷 — 방문자가 읽는 데이터 |
-| `latest.<무기>.json` | 나머지 6종 스냅샷 (`latest.warstaff.json` 등) |
+| `latest.<무기>.json` | 나머지 무기·방패 스냅샷 (`latest.warstaff.json` 등) |
+| `latest.hc[.<무기>].json` | 같은 것의 하드코어판 (`latest.hc.json`, `latest.hc.shield.json` 등) |
 | `worker/` | 크라우드 수합 서버 (Cloudflare Worker) — 앱 사용자의 검색 응답을 익명으로 모읍니다 |
 | `serve.py` | 수집기 + 로컬 실행기 (사이트 운영자용, 방문자는 필요 없음) |
 | `poe2-bow-harvester.user.js` | 채집기(선택) — 거래소에서 구경한 매물을 본인 곡선에 합침. 추가 요청 0 |
@@ -38,7 +39,9 @@
 python serve.py --collect --every 3600 --push
 ```
 
-무기 7종을 한 바퀴 돌리려면 `--weapons` 를 붙입니다(윈도우는 `start_collector.ps1`).
+무기 7종 + 방패를 한 바퀴 돌리려면 `--weapons` 를 붙입니다(윈도우는 `start_collector.ps1`).
+`--weapons` 를 붙이면 하드코어도 **2사이클마다 한 번** 같이 돌아 `latest.hc*.json` 을 씁니다
+(하드코어는 거래가 적어 가격이 천천히 움직입니다). `--weapons` 없이 돌리면 소프트코어 활만 받습니다.
 이력(`snapshots.db`)은 7일 밖 스냅샷을 스스로 정리하고, 스냅샷마다 리그가 찍혀 있어
 리그가 바뀌어도 지난 리그 시세가 섞이지 않습니다.
 

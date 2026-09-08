@@ -181,13 +181,21 @@ export default {
       // cat 없는 옛 행은 수집기와 같은 기본값(weapon.bow)으로 본다.
       const cat = url.searchParams.get("cat");
       if (cat && !CATEGORIES.has(cat)) return json({ error: "bad cat" }, 400);
+      // 리그(league)를 주면 그 리그 행만. 창이 카테고리당 800행으로 **이미 포화**라
+      // (실측 2026-09-08: 800/800, 가장 오래된 행 16.4시간), 하드코어 사용자가 생기면
+      // 그 행들이 소프트코어 표본을 1:1 로 밀어낸다 — 수집기는 리그가 다른 행을 전부
+      // 버리므로 순수 손실이다. 옛 수집기는 이 파라미터를 안 보내므로 없으면 안 자른다.
+      const league = url.searchParams.get("league");
+      if (league && league.length > 60) return json({ error: "bad league" }, 400);
+      const lg = league ? league.trim().toLowerCase() : null;
       const { results } = cat
         ? await env.DB.prepare(
             "SELECT t, fee, row FROM harvest WHERE t >= ?1 AND fee IS NOT NULL" +
               " AND COALESCE(json_extract(row, '$.cat'), 'weapon.bow') = ?2" +
+              (lg ? " AND LOWER(TRIM(COALESCE(json_extract(row, '$.league'), ''))) = ?3" : "") +
               " ORDER BY t DESC LIMIT 800",
           )
-            .bind(cut, cat)
+            .bind(...(lg ? [cut, cat, lg] : [cut, cat]))
             .all()
         : await env.DB.prepare(
             "SELECT t, fee, row FROM harvest WHERE t >= ?1 AND fee IS NOT NULL ORDER BY t DESC LIMIT 3000",   // fee 없는 행은 수집기가 버리므로 창을 낭비하지 않는다

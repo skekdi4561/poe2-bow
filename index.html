@@ -266,7 +266,7 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
     <div><button class="primary" id="trade-go">불러오기</button></div>
   </div>
   <p class="hint" id="trade-status" style="margin-top:10px"></p>
-  <p class="hint">따로 불러오지 않아도, <a href="poe2-bow-harvester.user.js">채집기(유저스크립트)</a>를
+  <p class="hint" id="harvest-hint">따로 불러오지 않아도, <a href="poe2-bow-harvester.user.js">채집기(유저스크립트)</a>를
     설치하면 거래소에서 구경한 무기 매물이 자동으로 여기 합쳐집니다 — 추가 요청 0.</p>
 </div>
 
@@ -1990,6 +1990,9 @@ WEAPONS.forEach(w => {                                  // 드롭다운 채우�
   o.value = w.suffix; o.textContent = w.label; $('weapon').appendChild(o);
 });
 $('weapon').addEventListener('change', e => selectWeapon(e.target.value));
+// 하드코어에서는 채집 합류를 안 한다(loadHarvest 게이트) — 그런데 안내문은 계속 보여서
+// "깔았는데 아무 일도 안 일어난다"가 된다. 되는 리그에서만 말한다.
+if (curTag && $('harvest-hint')) $('harvest-hint').style.display = 'none';
 LEAGUES.forEach(l => {
   const o = document.createElement('option');
   o.value = l.tag; o.textContent = l.label; $('league').appendChild(o);

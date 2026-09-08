@@ -1402,6 +1402,10 @@ def merge_harvest(merged, rows=None, verifier=None, league=None, category=None, 
             _u = HARVEST_URL + "/recent"
             if category:
                 _u += "?cat=" + urlquote(category, safe="")
+            # 리그도 서버에서 자른다. 안 자르면 카테고리당 800행 창을 두 리그가 나눠 쓰고,
+            # 아래 리그 필터가 다른 리그 행을 전부 버려서 그만큼 표본이 줄어든다.
+            if league:
+                _u += ("&" if category else "?") + "league=" + urlquote(urlunquote(league), safe="")
             req = urllib.request.Request(_u, headers={"User-Agent": "poe2-bow-collector"})
             with urllib.request.urlopen(req, timeout=15) as r:
                 rows = (json.load(r) or {}).get("rows") or []

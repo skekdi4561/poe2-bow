@@ -1,7 +1,7 @@
 // 워커 단위 테스트 — `node worker/test.mjs`. 네트워크·D1 없음: 순수 함수(validRow/lidOf)와 소스 문자열만 본다.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { validRow, lidOf } from "./src/index.js";
+import worker, { validRow, lidOf } from "./src/index.js";
 const src0 = readFileSync(new URL("./src/index.js", import.meta.url), "utf8");
 
 const ok = { id: "abc", name: "활", pdps: 900, edps: 100, aps: 1.4, crit: 6, price: 3, cur: "divine",
@@ -56,6 +56,46 @@ assert.equal(lidOf(validRow(noFee)), "nofee:abc");
 
 // /recent 는 fee 없는 행을 SQL 에서 걸러 창(LIMIT 3000)을 낭비하지 않는다 — 소스 문자열 단언
 const src = readFileSync(new URL("./src/index.js", import.meta.url), "utf8");
+// /recent 의 리그 필터는 **핸들러를 실제로 돌려서** 본다. 소스 문자열만 보면 SQL 은 있는데
+// 바인딩 개수가 안 맞는 식의 결함을 놓친다 — v1.1.0 에서 방패 막기를 그렇게 놓쳤다.
+// (D1 은 없으니 prepare/bind 를 가로채 SQL 과 바인딩을 그대로 받아 본다.)
+{
+  const calls = [];
+  const env = {
+    DB: {
+      exec: async () => ({}),          // ensureSchema 용
+      prepare(sql) {
+        const c = { sql, args: null };
+        calls.push(c);
+        return { bind: (...a) => { c.args = a; return { all: async () => ({ results: [] }) }; } };
+      },
+    },
+  };
+  const hit = async (qs) => {
+    calls.length = 0;
+    await worker.fetch(new Request("https://w.dev/recent" + qs), env);
+    return calls[calls.length - 1];
+  };
+
+  const plain = await hit("?cat=weapon.bow");
+  assert.ok(!/\$\.league/.test(plain.sql), "league 를 안 줬는데 리그로 잘랐다 — 옛 수집기가 빈 창을 받는다");
+  assert.equal(plain.args.length, 2, "cat 만 줬을 때 바인딩 2개");
+
+  const filtered = await hit("?cat=weapon.bow&league=HC%20Forbidden%20Rites");
+  assert.match(filtered.sql, /json_extract\(row, '\$\.league'\)/, "리그를 줬는데 SQL 이 안 잘랐다");
+  assert.equal(filtered.args.length, 3, "리그까지 주면 바인딩 3개 — 개수가 어긋나면 D1 이 통째로 던진다");
+  assert.equal(filtered.args[2], "hc forbidden rites", "리그 비교는 소문자·trim (수집기 _norm_league 와 같은 규약)");
+
+  // 대소문자·여백이 달라도 같은 리그로 잡혀야 한다
+  const messy = await hit("?cat=weapon.bow&league=%20forbidden%20RITES%20");
+  assert.equal(messy.args[2], "forbidden rites");
+
+  // 길이 상한 — 임의 문자열이 SQL 파라미터로 그대로 흐르지 않게
+  const long = await worker.fetch(
+    new Request("https://w.dev/recent?cat=weapon.bow&league=" + "x".repeat(61)), env);
+  assert.equal(long.status, 400, "과도하게 긴 리그 문자열은 거부");
+}
+
 const recent = src.slice(src.indexOf('url.pathname === "/recent"'));
 assert.ok(recent.length > 0, "/recent 분기를 못 찾았다");
 assert.match(recent, /SELECT t, fee, row FROM harvest WHERE[^"]*fee IS NOT NULL/);   // 조건이 빠지면 fee 없는 행이 창을 채운다
