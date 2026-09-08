@@ -162,6 +162,39 @@ sandbox.localStorage._s['poe2bows'] = JSON.stringify([
 ]);
 sandbox.self = sandbox; sandbox.globalThis = sandbox;
 
+// 콜드스타트 환율 표는 세 곳에 복제돼 있다(index.html RATE_DEFAULT · serve.py DEFAULT_RATES ·
+// 오버레이 appraiser.ts DEFAULT_RATES). 화폐 '집합'은 이미 지켜지는데 '값'을 대조하는 단언은
+// 한 건도 없었다 — 그래서 셋 중 일부만 갱신해도 아무 테스트도 안 깨졌다. 여기서 둘을 잠근다
+// (오버레이는 리포 경계 밖이라 못 잠근다 — 그쪽은 수집기 파생이 상수를 도달 불가로 만든다).
+{
+  const py = fs.readFileSync('serve.py', 'utf8');
+  const html = fs.readFileSync('index.html', 'utf8');
+  const num = (src, re, what) => {
+    const m = src.match(re);
+    if (!m) throw new Error(`환율 표 대조: ${what} 를 못 찾았다`);
+    return m.slice(1).map(Number);
+  };
+  const [pyMir] = num(py, /^MIRROR_IN_DIVINE = ([\d.]+)$/m, 'serve.py MIRROR_IN_DIVINE');
+  const [jsMir] = num(html, /^const MIRROR_IN_DIVINE = ([\d.]+);/m, 'index.html MIRROR_IN_DIVINE');
+  if (pyMir !== jsMir) throw new Error(`MIRROR_IN_DIVINE 불일치: serve.py ${pyMir} vs index.html ${jsMir}`);
+
+  const pyR = num(py,
+    /DEFAULT_RATES = \{"exalted": ([\d.]+), "chaos": ([\d.]+), "divine": ([\d.]+), "annul": ([\d.]+),/,
+    'serve.py DEFAULT_RATES');
+  const jsR = num(html,
+    /const RATE_DEFAULT = \{ exalted: ([\d.]+), chaos: ([\d.]+), divine: ([\d.]+), annul: ([\d.]+),/,
+    'index.html RATE_DEFAULT');
+  ['exalted', 'chaos', 'divine', 'annul'].forEach((c, i) => {
+    if (pyR[i] !== jsR[i]) throw new Error(`콜드스타트 ${c} 불일치: serve.py ${pyR[i]} vs index.html ${jsR[i]}`);
+  });
+  // 미러는 두 파일 다 divine 다리에 배수를 곱한다 — 다리가 어긋나면 미러도 같이 틀린다
+  const [pyLeg] = num(py, /"mirror": ([\d.]+) \* MIRROR_IN_DIVINE\}/, 'serve.py mirror 다리');
+  const [jsLeg] = num(html, /mirror: ([\d.]+) \* \d+ \};/, 'index.html mirror 다리');
+  if (pyLeg !== pyR[2] || jsLeg !== jsR[2]) {
+    throw new Error(`미러 다리가 divine 과 다르다: py ${pyLeg}/${pyR[2]} · js ${jsLeg}/${jsR[2]}`);
+  }
+}
+
 try {
   vm.runInNewContext(script, sandbox, { filename: 'index.html.script' });
 } catch (e) {

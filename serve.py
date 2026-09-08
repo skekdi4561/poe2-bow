@@ -552,6 +552,12 @@ NINJA_UA = "poe2-bow-appraiser/1.0 (personal price tool; contact: skekdi4561@gma
 # 캐시가 5분이다. 사이클 하나를 덮고도 남는 30분으로 잡는다.
 _NINJA_CACHE = {}
 NINJA_CACHE_TTL = 1800
+# 미러/디바인 배수 기억. 미러는 poe.ninja 단일 소스인데(교환쌍으로는 못 잰다 — TRADE_CURRENCIES
+# 4종만 돈다) **하드코어 응답에는 mirror 항목이 아예 없다**(실측 2026-09-08: 응답 전체에 0회,
+# HC 교환 거래량이 소프트코어의 1/190). 그래서 미러가 있는 리그의 배수를 빌린다.
+# 상수를 박지 않는 이유: 이 배수는 실측으로 3일에 240 -> 1188 (약 5배) 움직였고,
+# 코드에 박혀 있던 350 은 이미 2.62배 낮았다(같은 상수가 이틀에 두 번 썩었다).
+_MIRROR_MULT = None
 
 
 def ninja_rates(league, currencies=None):
@@ -613,6 +619,15 @@ def ninja_rates(league, currencies=None):
         if not (isinstance(rate, float) and rate == rate and rate != float("inf") and rate >= 1.0):
             continue                                    # 비정상값은 버리고 guard_rates 가 메우게
         out[cur] = {"rate": round(rate, 6), "how": "poe.ninja"}
+    # 미러 배수: 있으면 기억하고, 없으면 기억한 배수로 만든다. LEAGUE_PLAN 이 소프트코어(nth=1)를
+    # 하드코어(nth=2)보다 먼저 돌므로 하드코어 차례엔 배수가 항상 따뜻하다. 출처를 how 에 남겨
+    # 화면이 "빌려온 값"임을 그대로 보여준다(rateNote 는 how 를 그대로 찍는다).
+    global _MIRROR_MULT
+    if "mirror" in out and "divine" in out:
+        _MIRROR_MULT = out["mirror"]["rate"] / out["divine"]["rate"]
+    elif _MIRROR_MULT and "divine" in out and "mirror" not in out:
+        out["mirror"] = {"rate": round(out["divine"]["rate"] * _MIRROR_MULT, 6),
+                         "how": "poe.ninja 배수(타 리그)"}
     if len(out) < 2:
         return None
     _NINJA_CACHE[league] = (out, time.time())
@@ -2184,33 +2199,38 @@ def collect_loop(url, every, weapons=False):
     LEAGUE_PLAN = (("", 1, "소프트코어"), ("hc", 2, "하드코어"))
     cycle = 0
     while True:
-        done = 0
+        done = planned = 0
         if weapons:
             t0 = time.time()
             for tag, nth, lname in LEAGUE_PLAN:
                 if cycle % nth:
                     continue
+                planned += len(ATTACK_WEAPONS)   # 실제로 도는 리그만 — 위 continue 뒤다
                 lurl = with_league(url, tag)
                 print("[%s] === %s 리그 ===" % (time.strftime("%H:%M:%S"), lname))
                 for cat_id, suffix, name in ATTACK_WEAPONS:
                     print("[%s] 수집: %s (%s)" % (time.strftime("%H:%M:%S"), name, cat_id))
                     try:
+                        # 예외가 안 났다고 성공이 아니다 — 두 함수 다 "0개라 파일을 안 갱신"
+                        # 경로에서 0 을 돌려준다. 그걸 성공으로 세면 새 분모가 결손을 못 잡는다.
                         if suffix:
-                            collect_weapon(lurl, cat_id, suffix, tag)
+                            n = collect_weapon(lurl, cat_id, suffix, tag)
                         else:
-                            collect(lurl, tag)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
-                        done += 1
+                            n = collect(lurl, tag)   # 활 = 24h 합집합·크라우드·추세 포함 전체 경로
+                        done += 1 if n else 0
                     except TradeError as e:
                         print("     %s 건너뜀: %s" % (name, e))
                     except Exception as e:    # 한 무기가 죽어도 나머지는 계속
                         print("     %s 오류: %s: %s" % (name, type(e).__name__, e))
-            print("[%s] 이번 사이클 %d종 수집 (%.0f분)"
-                  % (time.strftime("%H:%M:%S"), done, (time.time() - t0) / 60))
+            # 분모가 없으면 부분 실패를 못 읽는다. 실제로 09-07 10:48 에 방패가 조용히 빠져
+            # '7종 수집'이 찍혔는데, 그 며칠 전 정상 7종 사이클과 글자 하나 다르지 않았다.
+            # (FIXLOG.md 에 'N/13종' 으로 적혀 있던 관측 장치가 로스터 변경 때 사라진 것이다.)
+            print("[%s] 이번 사이클 %d/%d종 수집 (%.0f분)"
+                  % (time.strftime("%H:%M:%S"), done, planned, (time.time() - t0) / 60))
             cycle += 1
         else:
             try:
-                collect(url)
-                done = 1
+                done = 1 if collect(url) else 0
             except TradeError as e:
                 print("[%s] 수집 실패: %s" % (time.strftime("%H:%M:%S"), e))
             except Exception as e:            # 한 번 실패했다고 루프까지 죽으면 안 된다
@@ -2696,8 +2716,28 @@ def demo():
         assert 33 < _nr["chaos"]["rate"] < 34, _nr["chaos"]
         assert 141 < _nr["annul"]["rate"] < 143, _nr["annul"]
         assert all(v["how"] == "poe.ninja" for k, v in _nr.items() if k != "exalted")
-        # 미러도 환율을 받아야 한다 — 없으면 미러 가격 활이 0(공짜)으로 환산돼 최전선을 망친다
+        # 미러도 환율을 받아야 한다 — 없으면 미러 가격 활이 화면에서 통째로 사라진다
         assert "mirror" in _nr and _nr["mirror"]["rate"] > 1_000_000, _nr.get("mirror")
+
+        # 미러가 **없는** 리그(하드코어가 실제로 그렇다 — poe.ninja 응답에 mirror 항목이 0회)는
+        # 앞서 본 리그의 배수를 빌려 채운다. 상수를 박으면 또 썩는다(3일에 240~1188).
+        _mult = _nr["mirror"]["rate"] / _nr["divine"]["rate"]
+        _no_mirror = {"lines": [ln for ln in _ninja_payload["lines"] if ln.get("id") != "mirror"]}
+        _NINJA_CACHE.clear()
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(_no_mirror)
+        _hc = ninja_rates("HC Runes of Aldur")
+        assert "mirror" in _hc, "미러 없는 리그가 배수를 못 빌렸다 — 그 리그 미러 매물이 사라진다"
+        assert _hc["mirror"]["how"] == "poe.ninja 배수(타 리그)", _hc["mirror"]
+        assert abs(_hc["mirror"]["rate"] / _hc["divine"]["rate"] - _mult) < 1e-6, (_hc, _mult)
+        # 배수 기억이 없을 때(콜드 스타트)는 억지로 만들지 않는다 — 없는 값을 지어내면 안 된다
+        _keep_mult = globals()["_MIRROR_MULT"]
+        globals()["_MIRROR_MULT"] = None
+        _NINJA_CACHE.clear()
+        _cold = ninja_rates("HC Runes of Aldur")
+        assert "mirror" not in _cold, "배수 기억이 없는데 미러를 지어냈다"
+        globals()["_MIRROR_MULT"] = _keep_mult
+        _NINJA_CACHE.clear()
+        urllib.request.urlopen = lambda req, timeout=None: _FakeResp(_ninja_payload)
         assert "perfect-exalted-orb" not in _nr and len(_nr) == 5, _nr
         # 형태가 어긋나거나(기준 화폐 없음) 값이 이상하면 None → 폴백
         urllib.request.urlopen = lambda req, timeout=None: _FakeResp(
@@ -3019,18 +3059,24 @@ def demo():
             assert ("HC%20" in u) == bool(tag), (u, tag)   # 태그와 URL 이 어긋나면 파일이 섞인다
             if sfx == "spear":
                 raise TradeError("한 무기만 실패")   # 나머지를 멈추면 안 된다
+            if sfx == "shield":
+                return 0        # 09-07 10:48 실사고 형태 — 예외 없이 0행(파일 미갱신)
+            return 7            # 실제 함수는 행 수를 돌려준다. None 이면 done 로직이 안 돈다.
         globals()["collect_weapon"] = _cw
-        globals()["collect"] = lambda u, tag="", **kw: _seen_w.append((tag, ""))
+        globals()["collect"] = lambda u, tag="", **kw: _seen_w.append((tag, "")) or 5
         _cycles = [0]
         def _sleep(x):
             _cycles[0] += 1
             if _cycles[0] >= 2:
                 raise _StopCycle()                  # 두 사이클만 돌고 빠져나온다
         time.sleep = _sleep
+        _log = _io.StringIO()
         try:
-            collect_loop(_u_sc, 3600, weapons=True)
+            with contextlib.redirect_stdout(_log):
+                collect_loop(_u_sc, 3600, weapons=True)
         except _StopCycle:
             pass
+        _log = _log.getvalue()
         _sfx = [w[1] for w in ATTACK_WEAPONS]
         _c0_sc = [s for t, s in _seen_w[:len(_sfx)]]
         assert _c0_sc == _sfx, _c0_sc
@@ -3039,6 +3085,15 @@ def demo():
         _tags = [t for t, s in _seen_w]
         # 사이클 0: 소프트코어 8 + 하드코어 8, 사이클 1: 소프트코어 8만
         assert _tags == [""] * 8 + ["hc"] * 8 + [""] * 8, _tags
+        # 요약 줄의 분모가 이번 사이클 계획을 그대로 비춰야 한다. 분모가 없으면 부분 실패를
+        # 정상과 구분할 수 없다 — 09-07 10:48 에 방패가 조용히 빠졌을 때 '7종 수집'이 찍혔고,
+        # 며칠 전 정상 7종 사이클과 글자 하나 다르지 않았다(FIXLOG 의 'N/13종' 회귀).
+        # 스텁: spear=예외 · shield=0행 → 리그마다 8 중 6 만 실제 수집.
+        _n = len(ATTACK_WEAPONS)
+        _want = ["이번 사이클 %d/%d종" % (2 * (_n - 2), 2 * _n),      # 사이클 0 = 두 리그
+                 "이번 사이클 %d/%d종" % (_n - 2, _n)]               # 사이클 1 = 소프트코어만
+        for _w in _want:
+            assert _w in _log, (_w, [l for l in _log.splitlines() if "이번 사이클" in l])
     finally:
         globals()["collect_weapon"], globals()["collect"] = _k_cw, _k_c
         time.sleep = _k_sleep
@@ -3977,15 +4032,17 @@ def frontier_py(rows):
 # 페이지의 RATE_DEFAULT 와 같은 값 — 환율 수집이 실패한 스냅샷에서도 축척이 살아야 한다.
 # 실제 사고: 교환 API 가 막힌 시간의 수집분에 엑잘 환율만 실려, 디바인 매물 135개가
 # 판정에서 통째로 사라졌었다. 기본값 폴백은 페이지가 이미 쓰는 방식이다.
-# 미러/디바인 비율. 2026-09-06 실측 350.0(mirror 24,104 ex / divine 68.9 ex).
-# ⚠ 이 비율도 리그마다 바뀐다 — 처음엔 지난 리그 값 6500(2,000,000/300)을 그대로 옮겨 썼는데
-#   이번 리그 실측이 350 이라 18.6배 어긋나 있었다. 절대값보다는 덜 썩지만 안 썩는 건 아니다.
-MIRROR_IN_DIVINE = 350.0
+# 미러/디바인 비율 — **콜드 스타트 전용**이다. 수집이 한 번이라도 돌면 ninja_rates 가
+# 배수를 데이터에서 파생하므로(_MIRROR_MULT) 이 값은 도달하지 않는다.
+# ⚠ 이 비율은 안 썩는 값이 아니다: 지난 리그 6500 -> 이번 리그 350(09-06) -> 920(09-08),
+#   같은 리그 안에서도 3일에 240~1188 로 움직였다. 그래서 상수를 늘리는 대신 파생으로 옮겼다.
+MIRROR_IN_DIVINE = 920.0
 # 첫 스냅샷이 오기 전에만 쓰이는 안전망(콜드 스타트). 실측이 있으면 언제나 실측이 이긴다.
-# 2026-09-06 poe.ninja 실측으로 갱신 — 직전 값은 지난 리그 것이라 chaos 19.4배·annul 29.9배·
-# divine 4.4배·mirror 83배 어긋나 있었다. index.html RATE_DEFAULT / appraiser.ts DEFAULT_RATES 와 같은 값.
-DEFAULT_RATES = {"exalted": 1.0, "chaos": 3.4, "divine": 69.0, "annul": 9.3,
-                 "mirror": 69.0 * MIRROR_IN_DIVINE}
+# 2026-09-08 poe.ninja 실측으로 갱신 — 직전(09-06) 값은 이틀 만에 chaos 2.28배·divine 1.84배·
+# annul 5.72배 어긋나 있었다. 미러만 고치면 divine 다리가 썩어 미러도 같이 틀린다.
+# index.html RATE_DEFAULT / appraiser.ts DEFAULT_RATES 와 같은 값(index_selftest 가 대조한다).
+DEFAULT_RATES = {"exalted": 1.0, "chaos": 7.77, "divine": 127.2, "annul": 53.2,
+                 "mirror": 127.2 * MIRROR_IN_DIVINE}
 
 
 def market_rows(latest):
