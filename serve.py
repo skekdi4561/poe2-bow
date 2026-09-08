@@ -1366,7 +1366,10 @@ def last_url():
         return None
     with db() as con:
         row = con.execute("SELECT source_url FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
-    return row[0] if row else None
+    # 마지막 행은 하드코어 사이클이 남긴 것일 수 있다. 여기서 정규화하지 않으면 --weapons
+    # 없는 경로(루프 else · 1회 실행)가 하드코어 URL 을 물고 돌아 latest.json 을 하드코어
+    # 데이터로 덮는다. weapons 경로가 with_league(url, tag) 를 다시 걸어도 멱등이다.
+    return with_league(row[0]) if row else None
 
 
 # 크라우드 수집 수합 서버 (오버레이 앱 사용자들의 검색 응답에서 나온 무기 매물).
@@ -1873,16 +1876,20 @@ def collect(url, tag=""):
         print("     오래된 이력 %d개 스냅샷 정리(%d일 밖)" % (_pruned, PRUNE_DAYS))
     # 페이지에는 최근 24시간 합집합을 싣는다 — 시간마다 돌리면 표본이 쌓인다.
     merged = recent_rows(league=league)
-    try:
-        # merge_harvest 는 받은 리스트에 제자리 append 하므로 예외가 나도 그때까지의 합류분이 남는다
-        merge_harvest(
-            merged,
-            verifier=make_harvest_verifier(base, league_path0, q0),
-            league=league,                   # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
-            category="weapon.bow",           # 활 곡선에는 활 매물만
-            rates=rates)                     # 신뢰 관측과 크라우드 행을 엑잘로 환산해 견준다
-    except Exception as e:                   # 크라우드는 부가정보 — 실패해도 수집은 나간다
-        print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
+    # 하드코어(tag)는 건너뛴다 — collect_weapon(무기 7종)이 이미 같은 이유로 막고 있었는데
+    # 활만 빠져 있었다. 워커 /recent 는 리그로 안 자르고 크라우드에 하드코어 행이 0건이라,
+    # 받아봐야 merge_harvest 의 리그 필터가 전량 버리는 순수 왕복 낭비다.
+    if not tag:
+        try:
+            # merge_harvest 는 받은 리스트에 제자리 append 하므로 예외가 나도 그때까지의 합류분이 남는다
+            merge_harvest(
+                merged,
+                verifier=make_harvest_verifier(base, league_path0, q0),
+                league=league,               # 이번 수집의 리그와 다른 크라우드 행은 안 섞는다
+                category="weapon.bow",       # 활 곡선에는 활 매물만
+                rates=rates)                 # 신뢰 관측과 크라우드 행을 엑잘로 환산해 견준다
+        except Exception as e:               # 크라우드는 부가정보 — 실패해도 수집은 나간다
+            print("     크라우드 합류 건너뜀: %s: %s" % (type(e).__name__, e))
     if not merged:
         # 빈 결과로 파일을 덮지 않는다(collect_weapon 과 같은 가드). 이번 수집이 0개여도
         # 24h 합집합이 있으면 그걸 싣고, 그것마저 비면 지난 파일을 보존한다.
@@ -2007,9 +2014,10 @@ def bootstrap_latest():
     빈 채로 봤다(그 무기 수집 차례가 올 때까지 — 사이클당 1종이라 몇 시간). 있는 파일은
     건드리지 않으므로 이미 수집 중이면 요청이 아예 안 나간다."""
     got = 0
-    for w in ATTACK_WEAPONS:
-        suffix = w[1] if w[1] != "bow" else ""
-        path = LATEST if not suffix else os.path.join(ROOT, "latest.%s.json" % suffix)
+    # 리그도 전부 - 하드코어를 빼면 로컬 뷰어의 리그 드롭다운이 영구 404 가 된다
+    # (수집기를 안 도는 사용자는 그 이름을 만들 경로가 아예 없다).
+    for path in [latest_path(w[1] if w[1] != "bow" else "", tag)
+                 for tag in LEAGUE_TAGS for w in ATTACK_WEAPONS]:
         name = os.path.basename(path)
         if os.path.exists(path):
             continue
@@ -2172,9 +2180,9 @@ def collect_loop(url, every, weapons=False):
     LEAGUE_PLAN = (("", 1, "소프트코어"), ("hc", 2, "하드코어"))
     cycle = 0
     while True:
+        done = 0
         if weapons:
             t0 = time.time()
-            done = 0
             for tag, nth, lname in LEAGUE_PLAN:
                 if cycle % nth:
                     continue
@@ -2192,23 +2200,25 @@ def collect_loop(url, every, weapons=False):
                         print("     %s 건너뜀: %s" % (name, e))
                     except Exception as e:    # 한 무기가 죽어도 나머지는 계속
                         print("     %s 오류: %s: %s" % (name, type(e).__name__, e))
-            # 푸시는 사이클 끝 1회. 무기·리그마다 밀면 커밋이 8~16회가 되어 GitHub Pages
-            # 빌드 소프트 한도(10회/시간)에 거래소 레이트 리밋보다 먼저 걸린다.
-            if done and "--push" in sys.argv:
-                try:
-                    push_latest()
-                except Exception as e:
-                    print("     페이지 푸시 건너뜀: %s: %s" % (type(e).__name__, e))
             print("[%s] 이번 사이클 %d종 수집 (%.0f분)"
                   % (time.strftime("%H:%M:%S"), done, (time.time() - t0) / 60))
             cycle += 1
         else:
             try:
                 collect(url)
+                done = 1
             except TradeError as e:
                 print("[%s] 수집 실패: %s" % (time.strftime("%H:%M:%S"), e))
             except Exception as e:            # 한 번 실패했다고 루프까지 죽으면 안 된다
                 print("[%s] 수집 오류: %s: %s" % (time.strftime("%H:%M:%S"), type(e).__name__, e))
+        # 푸시는 사이클 끝 1회, **두 경로 공통**. 무기·리그마다 밀면 커밋이 8~16회가 되어
+        # GitHub Pages 빌드 소프트 한도(10회/시간)에 거래소 레이트 리밋보다 먼저 걸린다.
+        # weapons 분기 안에 두었더니 --weapons 없는 운영자에겐 --push 가 무동작이었다.
+        if done and "--push" in sys.argv:
+            try:
+                push_latest()
+            except Exception as e:
+                print("     페이지 푸시 건너뜀: %s: %s" % (type(e).__name__, e))
         print("     다음 수집까지 %d초 대기 (Ctrl+C 로 종료)" % every)
         time.sleep(every)
 
@@ -2978,6 +2988,21 @@ def demo():
     assert with_league(_u_sc, "hc") == _u_hc
     assert with_league(_u_hc, "hc") == _u_hc, "이미 HC 인 URL 에 HC 를 또 붙이면 안 된다"
     assert with_league(_u_hc, "") == _u_sc, "재시작 오염 경로 — HC URL 이 SC 로 안 돌아왔다"
+    # last_url() 은 그 정규화를 **실제로 거쳐야** 한다. 안 거치면 --weapons 없는 경로(루프 else ·
+    # 1회 실행)가 하드코어 URL 을 물고 돌아 latest.json 을 하드코어 데이터로 덮는다.
+    # with_league 단언만으로는 이 결함을 못 잡는다(변이 실측으로 확인).
+    class _FakeCon:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a): return type("_C", (), {"fetchone": lambda s: (_u_hc,)})()
+    _keepdb, _keepDB = globals()["db"], DB
+    globals()["db"] = lambda *a, **k: _FakeCon()
+    globals()["DB"] = __file__                    # 존재하는 경로면 된다(열지는 않는다)
+    try:
+        _lu = last_url()
+    finally:
+        globals()["db"] = _keepdb; globals()["DB"] = _keepDB
+    assert _lu == _u_sc, "last_url() 이 하드코어 URL 을 그대로 돌려줬다: %s" % _lu
 
     # collect_loop(weapons=True): 한 사이클에 8종을 전부 돌고, 한 무기가 실패해도 나머지가 돈다.
     # 그리고 리그 주기를 지킨다 — 사이클 0 은 두 리그, 사이클 1 은 소프트코어만.
@@ -3015,6 +3040,33 @@ def demo():
         time.sleep = _k_sleep
 
     # 상위권은 이제 밴드 판정이 아니라 DPS 정렬로 직접 뜬다(load_top_dps).
+    # --push 는 **두 경로 모두**에서 사이클당 정확히 1회 돌아야 한다. 하드코어를 넣으면서
+    # 푸시를 weapons 분기 안으로 옮겼는데, 그 바람에 --weapons 없이 돌리는 운영자에겐
+    # --push 가 오류 한 줄 없이 무동작이 됐다. 위 루프 테스트는 sys.argv 에 --push 가
+    # 없어서 이걸 원리적으로 못 봤다.
+    for _wmode in (True, False):                       # 두 사이클 -> 푸시 2회
+        _pushes = []
+        _k = (collect, collect_weapon, push_latest, time.sleep, list(sys.argv))
+        try:
+            globals()["collect"] = lambda u, tag="", **kw: 1
+            globals()["collect_weapon"] = lambda u, cat, sfx, tag="", **kw: 1
+            globals()["push_latest"] = lambda *a, **kw: _pushes.append(1)
+            sys.argv = list(sys.argv) + ["--push"]
+            _n = [0]
+            def _sl(x, _n=_n):
+                _n[0] += 1
+                if _n[0] >= 2:
+                    raise _StopCycle()
+            time.sleep = _sl
+            try:
+                collect_loop(_u_sc, 3600, weapons=_wmode)
+            except _StopCycle:
+                pass
+        finally:
+            (globals()["collect"], globals()["collect_weapon"], globals()["push_latest"],
+             time.sleep, sys.argv) = _k
+        assert len(_pushes) == 2, "weapons=%s: 푸시 %d회(기대 2)" % (_wmode, len(_pushes))
+
     assert TOP_CAP >= 100, "상위 100개를 못 담는다"
 
     # 정적 파일 게이트: `;params`+%2f 로 translate_path 를 다른 파일로 풀던 우회를 막는다(실서버로 실측)
@@ -3345,15 +3397,17 @@ def demo():
               "price": 999, "cur": "divine", "rarity": "Rare", "mods": [], "fee": 1, "t": _now}]
     assert "폭탄" not in [r["name"] for r in merge_harvest(list(_base), rows=_huge)]
 
-    # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다 — 무기 7종 전부
+    # bootstrap_latest: 시세 파일이 이미 있으면 네트워크를 아예 안 탄다 — 8종 × 리그 2개 전부.
+    # 리그를 빼먹으면 수집기를 안 도는 사용자(로컬 뷰어 exe)의 하드코어 드롭다운이 영구 404 다.
     keepL2, keepR2 = LATEST, ROOT
     d3 = tempfile.mkdtemp()
     try:
         globals()["ROOT"] = d3
         globals()["LATEST"] = os.path.join(d3, "l.json")
-        for _w in ATTACK_WEAPONS:                        # 7종 파일을 미리 깔아 둔다
-            _sfx = _w[1] if _w[1] != "bow" else ""
-            _p = LATEST if not _sfx else os.path.join(d3, "latest.%s.json" % _sfx)
+        _all16 = [latest_path(_w[1] if _w[1] != "bow" else "", _t)
+                  for _t in LEAGUE_TAGS for _w in ATTACK_WEAPONS]
+        assert len(set(_all16)) == 16, _all16       # 리그 × 무기가 서로 안 겹친다
+        for _p in _all16:                          # 16개를 미리 깔아 둔다
             open(_p, "w").write("{}")
         _netB = []
         _keepReq = urllib.request.Request
@@ -3364,6 +3418,21 @@ def demo():
             urllib.request.Request = _keepReq
         assert _netB == [], _netB
         assert open(LATEST).read() == "{}"
+        # 하드코어 파일 하나만 지우면 **그 이름 하나만** 받으러 나간다(리그를 정말 훑는지).
+        _hc = latest_path("shield", "hc")
+        os.remove(_hc)
+        _netB2 = []
+        _keepOpen = urllib.request.urlopen
+        # 수집기 자체 테스트는 오프라인에서도 같아야 한다 — 이름만 보고 실제 응답은 막는다.
+        urllib.request.urlopen = lambda *a, **k: (_ for _ in ()).throw(OSError("테스트: 네트워크 차단"))
+        urllib.request.Request = lambda *a, **k: _netB2.append(a[0]) or _keepReq(*a, **k)
+        try:
+            bootstrap_latest()
+        except Exception:
+            pass                               # 실제 요청은 실패해도 된다 — 이름만 본다
+        finally:
+            urllib.request.Request = _keepReq; urllib.request.urlopen = _keepOpen
+        assert [u.rsplit("/", 1)[-1] for u in _netB2] == ["latest.hc.shield.json"], _netB2
     finally:
         globals()["LATEST"] = keepL2; globals()["ROOT"] = keepR2
         shutil.rmtree(d3, ignore_errors=True)
