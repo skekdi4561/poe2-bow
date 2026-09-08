@@ -1696,7 +1696,9 @@ def build_trend(hours=72, anchors=None, con=None, category=None, league=None):
     if con is None:
         con = db(); close = True
     try:
-        # 리그를 주면 그 리그만. NULL 은 리그 칸이 생기기 전의 행이라 지금 리그로 본다.
+        # 리그를 주면 그 리그만. **NULL 관용은 없다** — 하드코어를 넣으면서 `_league_sql` 의
+        # `league IS NULL OR` 를 없앴다(옛 행 97개는 'forbidden rites' 로 백필). 남겨두면
+        # 하드코어가 소프트코어 환율을 물려받아 guard_rates 3배 밴드가 진짜 값을 거부한다.
         snaps = con.execute(
             "SELECT id, taken_at, rates FROM snapshots"
             " WHERE taken_at >= ? AND category IS ?" + _league_sql(league, "") +
