@@ -72,6 +72,26 @@ const errors = [];
     ${bad.join('\n    ')}`);
 }
 
+// 스냅샷 파일명이 리터럴로 굳으면 리그를 골라도 그 무기만 다른 리그를 본다.
+// 실제로 활 경로가 'latest.json' 리터럴이었고, 다른 무기 분기만 weaponFile 을 쓰고 있었다 —
+// 활은 기본 진입 화면이라 리그 전환이 통째로 안 먹는 것처럼 보였을 것이다.
+{
+  const bad = [...html.matchAll(/loadSnapshot\(\s*'(latest[.\w]*\.json)'/g)].map((m) => m[1]);
+  if (bad.length)
+    errors.push(`스냅샷 파일명이 리터럴로 굳어 있다 — weaponFile() 을 쓸 것: [${bad}]`);
+}
+
+// 리그 태그는 수집기와 페이지 두 벌이다. 어긋나면 페이지가 없는 파일을 부른다.
+{
+  const pySrc = fs.readFileSync('serve.py', 'utf8');
+  const pyTags = [...pySrc.matchAll(/LEAGUE_TAGS = \(([^)]*)\)/g)]
+    .flatMap((m) => [...m[1].matchAll(/"([a-z]*)"/g)].map((x) => x[1])).sort();
+  const htmlTags = [...html.matchAll(/\{ tag: '([a-z]*)', label: '[^']+' \}/g)]
+    .map((m) => m[1]).sort();
+  if (pyTags.join(',') !== htmlTags.join(','))
+    errors.push(`리그 태그 불일치 — serve.py [${pyTags}] vs index.html [${htmlTags}]`);
+}
+
 // 무기 목록이 세 벌(수집기·워커·이 페이지) 있는데 셋이 어긋나면 무기 탭 하나가 조용히
 // 빈 화면이 된다 — 수집기가 안 뜨거나, 워커가 크라우드를 거부하거나, 페이지가 없는 파일을 찾는다.
 // 지금까지 아무도 이 정합을 검사하지 않았다(부적이 09-05 에 추가된 최신 항목이라 딱 이 자리다).

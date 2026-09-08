@@ -250,6 +250,8 @@ footer{margin-top:8px; color:var(--ink-3); font-size:12px; border-top:1px solid 
 <div class="card" id="weapon-card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
   <label for="weapon" style="font-weight:600">무기 종류</label>
   <select id="weapon" aria-label="무기 종류"></select>
+  <label for="league" style="font-weight:600">리그</label>
+  <select id="league" aria-label="리그"></select>
   <span class="hint" id="weapon-note" style="margin:0">캐스터(완드·셉터·스태프)는 주문 옵션이 값을 정해 DPS 곡선과 무관하므로 제외합니다.</span>
 </div>
 
@@ -698,11 +700,21 @@ let bows = [];
 // (수동 등록 행은 pdps 대신 pmin/pmax 를 갖는다). 없는 값의 표시는 fmt 가 던지지 않게 맡는다.
 const numOk = r => ['pdps', 'edps', 'aps', 'crit', 'block', 'price', 'pmin', 'pmax', 'emin', 'emax']
   .every(k => r[k] === undefined || (typeof r[k] === 'number' && isFinite(r[k])));
-bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
+// 리그 태그. '' = 소프트코어(도전 리그), 'hc' = 하드코어. serve.py LEAGUE_TAGS 와 같은 값.
+// bows 복원보다 **먼저** 선언해야 아래 조건이 성립한다.
+let curTag = readStore('poe2league', '', v => v === '' || v === 'hc');
+// 저장된 수동·채집 매물은 소프트코어 것이다 — 하드코어 뷰에서는 안 섞는다.
+bows = curTag ? [] : readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
 let curWeapon = '';   // 선택된 무기 접미사('' = 활). 아래 save() 가 먼저 참조하므로 여기서 선언
 // 수집기(serve.py --collect --weapons)가 무기마다 latest.<접미사>.json 을 써둔다.
 // 활은 접미사 없이 latest.json (기존 파이프라인 그대로 — 수동 로드·채집기까지 합류).
 // 순서·접미사·표시명은 serve.py 의 ATTACK_WEAPONS 와 같아야 한다.
+// serve.py LEAGUE_TAGS 와 같은 태그. 키가 `tag:` 인 것이 중요하다 —
+// index_selftest 의 무기 접미사 정규식이 `{ suffix: '…', label: '…' }` 를 파일 전체에서
+// 훑으므로, 같은 모양으로 쓰면 리그가 무기 접미사 집합에 섞여 3자 정합이 거짓으로 깨진다.
+const LEAGUES = [{ tag: '', label: '소프트코어' }, { tag: 'hc', label: '하드코어' }];
+const leagueLabel = () => (LEAGUES.find(l => l.tag === curTag) || LEAGUES[0]).label;
+
 const WEAPONS = [
   { suffix: '',         label: '활' },
   { suffix: 'crossbow', label: '석궁' },
@@ -714,7 +726,10 @@ const WEAPONS = [
   // 방패는 무기가 아니다 — 지표가 DPS 가 아니라 방어도라서 화면 문구가 갈린다(metricName).
   { suffix: 'shield',   label: '방패' },
 ];
-const weaponFile = suffix => suffix ? `latest.${suffix}.json` : 'latest.json';
+// serve.py latest_path() 와 **같은 규칙**이어야 한다: latest[.<태그>][.<접미사>].json
+// 소프트코어(tag='')는 글자 하나도 안 바뀐다 — 배포된 오버레이가 그 이름을 fetch 한다.
+const weaponFile = (suffix, tag = curTag) =>
+  'latest' + (tag ? '.' + tag : '') + (suffix ? '.' + suffix : '') + '.json';
 // 화면 문구에 쓰는 "지금 보고 있는 무기" 이름. 예전엔 문구가 전부 활로 굳어 있어서
 // 창이나 부적을 보는 중에도 활 얘기를 읽게 됐다.
 // 이 무기 종류에서 "높을수록 좋은 값"의 이름. 무기는 DPS, 방패는 방어도.
@@ -766,7 +781,9 @@ function weaponJosa(withBatchim, without){
 
 // 저장은 활 뷰에서만 — 다른 무기를 보는 중 save() 가 돌면 그 무기 스냅샷이 활 저장분을 덮어
 // 수동·채집 매물이 영구 소실된다(감사에서 재현). 호출부 셋을 여기 한 곳에서 막는다.
-function save(){ if (curWeapon !== '') return; try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
+// 하드코어 뷰에서도 막는다 — 안 막으면 하드코어 스냅샷이 소프트코어 저장분을 덮어
+// 수동·채집 매물이 영구 소실된다(무기 뷰와 같은 이유).
+function save(){ if (curWeapon !== '' || curTag !== '') return; try { localStorage.setItem('poe2bows', JSON.stringify(bows)); } catch (e) {} }
 // 등록·삭제·불러오기는 활 뷰에서만 — 다른 무기 뷰에서는 저장이 안 되는데 화면만 바뀌면 '저장된 척' 사라진다
 const bowOnly = () => { if (curWeapon === '') return true; status('등록·삭제·불러오기는 활을 선택했을 때만 저장됩니다 — 무기를 활로 바꾸세요'); return false; };
 
@@ -1290,7 +1307,8 @@ function freshness(base){
   const lo = Math.min(...ts), hi = Math.max(...ts);
 
   up.style.display = '';
-  up.innerHTML = `<strong>${esc(agoStr(hi))}</strong> 기준 시세 · ${esc(timeStr(hi))} · 기준 매물 ${base.length}개`;
+  up.innerHTML = `<strong>${esc(agoStr(hi))}</strong> 기준 시세 · ${esc(timeStr(hi))} · 기준 매물 ${base.length}개`
+    + (snapLeague ? ` · ${esc(snapLeague)}` : '');
   if (hi - lo > 2 * 3600 * 1000) up.innerHTML += ' <span class="sub">· 최근 24시간 관측 합집합</span>';
 
   if ((hi - lo) / DAY > 2 || unknown) {
@@ -1850,8 +1868,11 @@ $('trade-go').addEventListener('click', async () => {
 /* ---------- 미리 떠둔 스냅샷 ---------- */
 (function weaponSelfTest(){
   try {
-    if (weaponFile('') !== 'latest.json') throw new Error('weaponFile 활은 latest.json');
-    if (weaponFile('crossbow') !== 'latest.crossbow.json') throw new Error('weaponFile 접미사');
+    // serve.py latest_path() 와 같은 규칙. **소프트코어 이름은 안 바뀐다** — 배포된 오버레이가 그걸 fetch 한다.
+    if (weaponFile('', '') !== 'latest.json') throw new Error('weaponFile 활은 latest.json');
+    if (weaponFile('crossbow', '') !== 'latest.crossbow.json') throw new Error('weaponFile 접미사');
+    if (weaponFile('', 'hc') !== 'latest.hc.json') throw new Error('weaponFile 하드코어 활');
+    if (weaponFile('crossbow', 'hc') !== 'latest.hc.crossbow.json') throw new Error('weaponFile 하드코어 접미사');
     if (WEAPONS[0].suffix !== '' || WEAPONS[0].label !== '활') throw new Error('WEAPONS 활 먼저·빈 접미사');
     if (new Set(WEAPONS.map(w => w.suffix)).size !== WEAPONS.length) throw new Error('WEAPONS 접미사 중복');
     // 캐스터(정확히 wand/sceptre/staff)는 제외 — warstaff 는 공격무기라 포함돼야 한다
@@ -1908,11 +1929,16 @@ async function selectWeapon(suffix){
   snapConds = []; snapLeague = '';
   applyMetricLabels();          // 방패면 DPS 문구가 방어도로 바뀐다(안 부르면 그대로 남는다)
   if (suffix === '') {                                  // 활: 저장분 복원 + 스냅샷 + 채집기
-    bows = readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
+    // 저장분·채집기는 소프트코어 것이다 — 하드코어 뷰에서는 안 섞는다.
+    bows = curTag ? [] : readStore('poe2bows', [], Array.isArray).filter(b => b && typeof b === 'object' && numOk(b));
     refresh();
-    await loadSnapshot('latest.json', true);
+    // weaponFile('') 을 거쳐야 한다. 예전엔 'latest.json' 리터럴이라, 리그를 골라도
+    // **활만** 소프트코어가 나왔다(다른 무기 분기는 weaponFile 을 쓰고 있었다).
+    const ok0 = await loadSnapshot(weaponFile(''), true);
     snapReady = true;                                   // 실패했어도 '응답은 받았다' — 이제 채집 이벤트를 받는다
     if (curWeapon !== '') return;                       // 기다리는 사이 다른 무기로 바뀜
+    if (!ok0) { bows = []; refresh(); status(`${leagueLabel()} 활 시세는 아직 수집되지 않았습니다 — 곧 채워집니다.`); return; }
+    if (curTag) { refresh(); return; }                  // 하드코어는 채집기 합류 대상이 아니다
     const n = loadHarvest();
     if (n) { save(); refresh(); status(`거래소에서 직접 주운 매물 ${n}개를 합쳐 보는 중 (채집기)`); }
     return;
@@ -1928,6 +1954,18 @@ WEAPONS.forEach(w => {                                  // 드롭다운 채우�
   o.value = w.suffix; o.textContent = w.label; $('weapon').appendChild(o);
 });
 $('weapon').addEventListener('change', e => selectWeapon(e.target.value));
+LEAGUES.forEach(l => {
+  const o = document.createElement('option');
+  o.value = l.tag; o.textContent = l.label; $('league').appendChild(o);
+});
+$('league').value = curTag;
+// 리그를 바꾸면 새로 고친다 — 스냅샷·저장분·조건·환율이 전부 리그에 묶여 있어서
+// 부분 갱신보다 다시 부팅하는 쪽이 훨씬 적은 코드로 옳다.
+$('league').addEventListener('change', e => {
+  // readStore 가 JSON.parse 를 하므로 쓸 때도 JSON 이어야 한다(생 문자열은 파싱에 걸려 기본값으로 떨어진다)
+  try { localStorage.setItem('poe2league', JSON.stringify(e.target.value)); } catch (err) {}
+  window.location.reload();
+});
 refresh();
 selectWeapon('');                                       // 활로 시작 (기존 동작 그대로)
 </script>
