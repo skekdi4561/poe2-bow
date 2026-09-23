@@ -610,12 +610,14 @@ const isOffDps = m => {
 // 곡선을 뜰 가치가 없는 옵션 — 수집기(serve.py)와 같은 기준으로 거른다.
 // 룬·베이스 고유 옵션은 "얼마를 더 내는가"의 답이 못 된다.
 // 수집기(serve.py)의 JUNK_PREFIX/WORDS/KEYS 와 같은 기준. 능력치는 착용 요구치용이라 뺀다.
-const JUNK_MOD = /^결속됨|시야 반경|Light Radius|투사체 사거리|능력치 요구사항/;
+// 오버레이 appraiser.ts 와 같은 목록 — 영어 크라우드 줄의 같은 옵션도 거른다
+const JUNK_MOD = /^결속됨|^Bonded:|^Allocates|시야 반경|Light Radius|투사체 사거리|Projectile Range|능력치 요구사항|Attribute Requirements/;
 const JUNK_EXACT = new Set(['민첩 #', '힘 #', '지능 #', '모든 능력치 #']);
 
 // 한국 거래소는 옵션을 "[Physical|물리] 피해 #% 증가" 처럼 이중 언어 마크업으로 준다.
 // 읽는 사람에게는 한국어만 필요하다.
-const cleanMod = m => String(m).replace(/\[([^\]|]*)\|([^\]]*)\]/g, '$2').replace(/\[([^\]]*)\]/g, '$1');
+// '[' 를 문자 클래스에서 뺀다 — "[[[[…" 크라우드 줄에서 역추적이 제곱으로 늘어 페이지가 멎는다
+const cleanMod = m => String(m).replace(/\[([^\][|]*)\|([^\][]*)\]/g, '$2').replace(/\[([^\][]*)\]/g, '$1');
 
 // "38% increased Critical Hit Chance" 와 "25% ..." 는 같은 옵션이다.
 // 숫자를 #으로 지워 같은 열쇠로 묶고, 숫자 자체는 문턱값 비교에 쓴다.
@@ -1643,6 +1645,10 @@ $('trade-go').addEventListener('click', async () => {
     if (modKey('38% increased Critical Hit Chance') !== '#% increased Critical Hit Chance') throw new Error('modKey');
     // 한국 거래소 실제 응답 형태 (이중 언어 마크업)
     if (cleanMod('[Physical|물리] 피해 #% 증가') !== '물리 피해 #% 증가') throw new Error('cleanMod');
+    // 크라우드 줄 방어 — '[' 가 잔뜩 든 줄에서 역추적이 제곱으로 늘면 페이지가 멎는다
+    { const t0 = Date.now(); cleanMod('['.repeat(20000) + '|' + '['.repeat(20000)); cleanMod('['.repeat(40000));
+      if (Date.now() - t0 > 200) throw new Error('cleanMod backtracking'); }
+    if (!JUNK_MOD.test('Bonded: +20 to maximum Life')) throw new Error('JUNK_MOD Bonded');
     if (modKey('[Accuracy|정확도] +58') !== '정확도 #') throw new Error('modKey markup');
     if (modVal('[Accuracy|정확도] +58') !== 58) throw new Error('modVal markup');
     if (modKey('치명타 명중 확률 28% 증가') !== '치명타 명중 확률 #% 증가') throw new Error('modKey ko');

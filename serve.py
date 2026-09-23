@@ -726,8 +726,10 @@ def cond_stat_filter(cid, minv):
     return {"type": "and", "filters": [{"id": cid, "value": {"min": minv}}]}
 
 # 카탈로그는 "+"를 안 쓰고(민첩 #), 음수 옵션도 증가로 적는다(아이템은 감소로 표시)
-_MARKUP = re.compile(r"\[([^\]|]*)\|([^\]]*)\]")
-_BRACKET = re.compile(r"\[([^\]]*)\]")
+# '[' 를 문자 클래스에서 뺀다 — 크라우드가 보낸 "[[[[…" 줄에서 역추적이 제곱으로 늘어난다.
+# 게임 마크업은 중첩되지 않아 실제 옵션에서 결과가 같다(오버레이·사이트와 같은 식).
+_MARKUP = re.compile(r"\[([^\][|]*)\|([^\][]*)\]")
+_BRACKET = re.compile(r"\[([^\][]*)\]")
 
 
 def clean_mod(m):
@@ -2299,6 +2301,10 @@ def demo():
 
     # 옵션 문구 정규화 — 카탈로그 표기(부호 없음, 음수도 증가)에 맞춰야 stat id 가 붙는다
     assert clean_mod("[Physical|물리] 피해 168% 증가") == "물리 피해 168% 증가"
+    # 크라우드 줄 방어 — '[' 가 잔뜩 든 줄에서 역추적이 제곱으로 늘면 수집 주기가 멎는다
+    _t0 = __import__("time").perf_counter()  # 이 함수는 뒤에서 global time 을 쓴다
+    clean_mod("[" * 20000 + "|" + "[" * 20000)
+    assert __import__("time").perf_counter() - _t0 < 0.5, "clean_mod backtracking"
     assert mod_key("[Dexterity|민첩] +29") == "민첩 #"
     assert mod_key("[Accuracy|정확도] +58") == "정확도 #"
     assert mod_key("모든 투사체 스킬 레벨 +3") == "모든 투사체 스킬 레벨 #"
